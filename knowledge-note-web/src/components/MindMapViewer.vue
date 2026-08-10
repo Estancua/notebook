@@ -127,12 +127,20 @@ const initMindMap = () => {
 
 const addChildNode = () => {
   if (!mindMap) return
+  // 无激活节点时自动激活根节点
+  if (mindMap.renderer.activeNodeList.length === 0 && mindMap.renderer.root) {
+    mindMap.renderer.addNodeToActiveList(mindMap.renderer.root)
+  }
   mindMap.execCommand('INSERT_CHILD_NODE')
   syncToMarkdown()
 }
 
 const deleteNode = () => {
   if (!mindMap) return
+  if (mindMap.renderer.activeNodeList.length === 0) {
+    toast('请先点击选中一个节点', 'info')
+    return
+  }
   mindMap.execCommand('REMOVE_NODE')
   syncToMarkdown()
 }
