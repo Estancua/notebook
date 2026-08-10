@@ -104,6 +104,7 @@ const initMindMap = () => {
     mindMap.destroy()
     mindMap = null
   }
+  activeNode = null
 
   const data = parseMdToTree(props.content)
 

@@ -74,7 +74,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, provide } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import StatusBar from '../components/StatusBar.vue'
 import NotebookTree from '../components/NotebookTree.vue'
@@ -124,6 +124,13 @@ onMounted(() => {
     if (toastRef.value) {
       toastRef.value.show(msg, type)
     }
+  }
+})
+
+// 为子组件提供 toast
+provide('showToast', (msg, type) => {
+  if (toastRef.value) {
+    toastRef.value.show(msg, type || 'info')
   }
 })
 
