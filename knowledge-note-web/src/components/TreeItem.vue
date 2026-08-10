@@ -15,6 +15,7 @@
       <span class="icon">📁</span>
       <span class="name">{{ node.name }}</span>
       <span class="note-count" v-if="node.noteCount !== undefined">({{ node.noteCount }})</span>
+      <span class="delete-icon" @click.stop="$emit('delete-node', node)" title="删除笔记本">×</span>
     </div>
     <div v-if="isExpanded && hasChildren" class="children">
       <TreeItem
@@ -25,6 +26,7 @@
         :selected-id="selectedId"
         @select="(id) => $emit('select', id)"
         @contextmenu-node="(data) => $emit('contextmenu-node', data)"
+        @delete-node="(n) => $emit('delete-node', n)"
       />
     </div>
   </div>
@@ -39,7 +41,7 @@ const props = defineProps({
   selectedId: { type: [Number, String], default: null }
 })
 
-const emit = defineEmits(['select', 'contextmenu-node'])
+const emit = defineEmits(['select', 'contextmenu-node', 'delete-node'])
 
 const isExpanded = ref(props.level === 0)
 
@@ -119,6 +121,22 @@ export default { name: 'TreeItem' }
   margin-left: 4px;
   font-size: 11px;
   color: #9ca3af;
+}
+.delete-icon {
+  margin-left: auto;
+  font-size: 16px;
+  font-weight: 700;
+  color: #d1d5db;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  padding: 0 4px;
+}
+.tree-node:hover .delete-icon {
+  opacity: 1;
+}
+.delete-icon:hover {
+  color: #ef4444;
 }
 .children {
   padding: 0;

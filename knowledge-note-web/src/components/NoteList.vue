@@ -49,6 +49,11 @@
             :class="{ favorited: note.isFavorite }"
             @click.stop="onToggleFavorite(note)"
           >{{ note.isFavorite ? '⭐' : '☆' }}</span>
+          <span
+            class="delete-btn"
+            title="删除笔记"
+            @click.stop="onDeleteNote(note)"
+          >×</span>
         </div>
       </div>
     </div>
@@ -66,7 +71,7 @@
 <script setup>
 import { ref, computed, watch, inject } from 'vue'
 import SearchInput from './SearchInput.vue'
-import { getNoteList, toggleFavorite } from '../api/noteApi'
+import { getNoteList, toggleFavorite, recycleNote } from '../api/noteApi'
 
 const props = defineProps({
   notebookId: { type: [Number, String], default: null },
@@ -127,6 +132,17 @@ const onToggleFavorite = async (note) => {
     await toggleFavorite(note.id)
     note.isFavorite = note.isFavorite ? 0 : 1
     emit('refresh')
+  } catch (e) {
+    // handled
+  }
+}
+
+const onDeleteNote = async (note) => {
+  if (!confirm(`确定删除笔记"${note.title || '无标题'}"吗？该操作会将笔记移入回收站。`)) return
+  try {
+    await recycleNote(note.id)
+    toast('已移入回收站', 'success')
+    loadNotes()
   } catch (e) {
     // handled
   }
@@ -268,6 +284,9 @@ defineExpose({ loadNotes })
 }
 .note-actions {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .favorite-star {
   cursor: pointer;
@@ -276,6 +295,21 @@ defineExpose({ loadNotes })
 }
 .favorite-star.favorited {
   color: #f59e0b;
+}
+.delete-btn {
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 700;
+  color: #d1d5db;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  padding: 0 2px;
+}
+.note-item:hover .delete-btn {
+  opacity: 1;
+}
+.delete-btn:hover {
+  color: #ef4444;
 }
 .list-footer {
   padding: 8px 16px;
