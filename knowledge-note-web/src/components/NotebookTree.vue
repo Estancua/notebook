@@ -41,6 +41,7 @@
         :selected-id="selectedNotebookId"
         @select="(id) => $emit('select-notebook', id)"
         @contextmenu-node="onContextMenu"
+        @delete-node="onDeleteNode"
       />
     </div>
 
@@ -132,6 +133,14 @@ const removeNotebook = () => {
   closeContextMenu()
   const node = contextMenu.value.node
   if (!node) return
+  doDeleteNotebook(node)
+}
+
+const onDeleteNode = (node) => {
+  doDeleteNotebook(node)
+}
+
+const doDeleteNotebook = (node) => {
   if (!confirm(`确定删除笔记本"${node.name}"吗？该操作不可恢复。`)) return
   deleteNotebook(node.id).then(() => {
     loadTree()

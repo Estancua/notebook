@@ -6,6 +6,9 @@
         <button class="tool-btn" @click="addChildNode" title="添加子节点">＋</button>
         <button class="tool-btn" @click="deleteNode" title="删除选中节点">✕</button>
         <span class="toolbar-sep"></span>
+        <button class="tool-btn" @click="expandAllNodes" title="展开全部">⊞◢</button>
+        <button class="tool-btn" @click="collapseAllNodes" title="收缩全部">⊞◣</button>
+        <span class="toolbar-sep"></span>
         <button class="tool-btn" @click="fitCanvas" title="适应画布">⊞</button>
         <button class="tool-btn" @click="zoomIn" title="放大">🔍+</button>
         <button class="tool-btn" @click="zoomOut" title="缩小">🔍−</button>
@@ -115,7 +118,8 @@ const initMindMap = () => {
     mousewheelAction: 'zoom',
     readonly: false,
     initRootNodePosition: ['center', 'center'],
-    expand: true
+    expand: true,
+    alwaysShowExpandBtn: true
   })
 
   // 结构变化同步
@@ -148,6 +152,8 @@ const deleteNode = () => {
 const fitCanvas = () => mindMap && mindMap.view.fit()
 const zoomIn = () => mindMap && mindMap.view.enlarge()
 const zoomOut = () => mindMap && mindMap.view.narrow()
+const expandAllNodes = () => mindMap && mindMap.execCommand('EXPAND_ALL')
+const collapseAllNodes = () => mindMap && mindMap.execCommand('UNEXPAND_ALL')
 const emitBack = () => {
   syncToMarkdown()
   emit('back')
