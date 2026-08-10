@@ -119,18 +119,11 @@ const initMindMap = () => {
     expand: true
   })
 
-  // 跟踪当前激活节点
-  mindMap.on('node_active', (node) => {
-    activeNode = node
-  })
-
-  // 节点点击 → 跳转笔记（点击非根节点）
+  // 节点点击 → 激活并跳转笔记
   mindMap.on('node_click', (node) => {
-    if (node && node.nodeData && node.nodeData.data) {
-      const noteId = node.nodeData.data.noteId
-      if (noteId) {
-        emit('select-note', Number(noteId))
-      }
+    activeNode = node
+    if (node && node.nodeData && node.nodeData.data && node.nodeData.data.noteId) {
+      emit('select-note', Number(node.nodeData.data.noteId))
     }
   })
 
