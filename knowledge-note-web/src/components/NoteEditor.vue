@@ -1,7 +1,7 @@
 <template>
-  <div class="note-editor" v-if="noteId">
-    <!-- 标题栏 -->
-    <div class="editor-title-bar">
+  <div class="note-editor" :class="{ mindmap: mode === 'mindmap' }" v-if="noteId">
+    <!-- 标题栏(导图模式隐藏) -->
+    <div class="editor-title-bar" v-show="mode !== 'mindmap'">
       <input
         class="title-input"
         v-model="title"
@@ -11,6 +11,7 @@
     </div>
     <!-- 工具栏 -->
     <div class="editor-toolbar">
+      <template v-if="mode !== 'mindmap'">
       <button class="tool-btn" title="加粗 (Ctrl+B)" @click="wrapText('**')">B</button>
       <button class="tool-btn" title="斜体 (Ctrl+I)" @click="wrapText('*')"><em>I</em></button>
       <button class="tool-btn" title="标题1" @click="insertLine('# ')">H1</button>
@@ -22,6 +23,7 @@
       <button class="tool-btn" title="链接" @click="wrapLink()">🔗</button>
       <button class="tool-btn" title="代码块" @click="wrapText('`')">&lt;/&gt;</button>
       <span class="toolbar-sep"></span>
+      </template>
       <button class="tool-btn" @click="save" title="保存 (Ctrl+S)">💾 保存</button>
       <span class="toolbar-sep"></span>
       <button
@@ -464,8 +466,16 @@ defineExpose({ loadNote, save })
   flex: 1;
   display: flex;
 }
+.editor-content.mindmap {
+  flex: 1;
+}
 .editor-content.mindmap .mindmap-pane {
   flex: 1;
+}
+/* 导图模式下 hidden edit/preview panes */
+.editor-content.mindmap .edit-pane,
+.editor-content.mindmap .preview-pane {
+  display: none !important;
 }
 .suggest-empty {
   padding: 8px 12px;

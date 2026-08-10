@@ -29,6 +29,7 @@ const emit = defineEmits(['update:content', 'back'])
 const canvasRef = ref(null)
 let mindMap = null
 let resizeObserver = null
+let activeNode = null
 const toast = inject('showToast', () => {})
 let isInternalUpdate = false
 
@@ -118,10 +119,18 @@ const initMindMap = () => {
     expand: true
   })
 
-  // 节点点击编辑
+  // 跟踪当前激活节点
+  mindMap.on('node_active', (node) => {
+    activeNode = node
+  })
+
+  // 节点点击 → 跳转笔记（点击非根节点）
   mindMap.on('node_click', (node) => {
-    if (node && node.nodeData) {
-      // 双击可编辑
+    if (node && node.nodeData && node.nodeData.data) {
+      const noteId = node.nodeData.data.noteId
+      if (noteId) {
+        emit('select-note', Number(noteId))
+      }
     }
   })
 
@@ -134,23 +143,22 @@ const initMindMap = () => {
 
 const addChildNode = () => {
   if (!mindMap) return
-  const activeNodes = mindMap.getSelectNode ? mindMap.getSelectNode() : null
-  if (activeNodes && activeNodes.length > 0) {
-    mindMap.execCommand('INSERT_CHILD_NODE', false, [], { text: '新节点' })
+  if (activeNode) {
+    activeNode.addChild({ text: '新节点' })
+    syncToMarkdown()
   } else {
-    toast('请先选中一个节点')
+    toast('请先点击选中一个节点')
   }
-  syncToMarkdown()
 }
 
 const deleteNode = () => {
   if (!mindMap) return
-  const activeNodes = mindMap.getSelectNode ? mindMap.getSelectNode() : null
-  if (activeNodes && activeNodes.length > 0) {
-    mindMap.execCommand('REMOVE_NODE')
+  if (activeNode && !activeNode.isRoot) {
+    activeNode.remove()
+    activeNode = null
     syncToMarkdown()
   } else {
-    toast('请先选中一个节点')
+    toast(activeNode ? '不能删除根节点' : '请先选中一个节点')
   }
 }
 
