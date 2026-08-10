@@ -106,7 +106,7 @@ const props = defineProps({
   noteId: { type: [Number, String], default: null }
 })
 
-const emit = defineEmits(['saved', 'word-count-change'])
+const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active'])
 const toast = inject('showToast', () => {})
 
 const title = ref('')
@@ -319,8 +319,12 @@ const onKeydown = (e) => {
 
 // 切换到思维导图模式
 const switchToMindmap = () => {
-  mode.value = 'mindmap'
+  mode.value = mode.value === 'mindmap' ? 'edit' : 'mindmap'
 }
+// 导图模式切换时通知父组件
+watch(mode, (val) => {
+  emit('mindmap-active', val === 'mindmap')
+})
 const onMindmapUpdate = (newContent) => {
   content.value = newContent
   markDirty()

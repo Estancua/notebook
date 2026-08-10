@@ -14,7 +14,7 @@
         />
       </div>
       <!-- 中栏 -->
-      <div class="center-panel">
+      <div class="center-panel" :class="{ 'mindmap-expanded': isMindmapMode }">
         <!-- 回收站视图 -->
         <RecycleBin
           v-if="currentView === 'recycle'"
@@ -39,10 +39,12 @@
           :note-id="selectedNoteId"
           @saved="onNoteSaved"
           @word-count-change="onWordCountChange"
+          @mindmap-active="onMindmapActive"
         />
       </div>
-      <!-- 右栏 -->
+      <!-- 右栏（导图模式隐藏） -->
       <NoteDetailPanel
+        v-show="!isMindmapMode"
         :note="currentNoteDetail"
         @tags-update="onTagsUpdate"
       />
@@ -103,6 +105,7 @@ const selectedNoteId = ref(null)
 const currentNoteDetail = ref({})
 const wordCount = ref(0)
 const saveStatus = ref('')
+const isMindmapMode = ref(false)
 
 // 弹窗状态
 const showCreateNoteDialog = ref(false)
@@ -228,6 +231,11 @@ const refreshNoteList = () => {
   }
 }
 
+// 导图模式切换
+const onMindmapActive = (active) => {
+  isMindmapMode.value = active
+}
+
 // 标签更新后
 const onTagsUpdated = () => {
   refreshNoteList()
@@ -252,6 +260,9 @@ const onTagsUpdated = () => {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+}
+.center-panel.mindmap-expanded {
+  flex: 3;
 }
 .left-panel {
   display: flex;
