@@ -3,7 +3,7 @@
     <TopBar @search="onGlobalSearch" />
     <div class="main-content">
       <!-- 左栏 -->
-      <div class="left-panel">
+      <div class="left-panel" :class="{ 'mindmap-narrow': isMindmapMode }">
         <NotebookTree
           ref="notebookTreeRef"
           :current-view="currentView"
@@ -14,7 +14,7 @@
         />
       </div>
       <!-- 中栏 -->
-      <div class="center-panel" :class="{ 'mindmap-expanded': isMindmapMode }">
+      <div class="center-panel">
         <!-- 回收站视图 -->
         <RecycleBin
           v-if="currentView === 'recycle'"
@@ -261,12 +261,15 @@ const onTagsUpdated = () => {
   overflow: hidden;
   min-width: 0;
 }
-.center-panel.mindmap-expanded {
-  flex: 3;
-}
 .left-panel {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  width: 260px;
+  flex-shrink: 0;
+  transition: width 0.2s;
+}
+.left-panel.mindmap-narrow {
+  width: 60px;
 }
 </style>
