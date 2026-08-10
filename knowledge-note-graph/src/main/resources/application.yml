@@ -1,0 +1,80 @@
+# ============================
+# 知识笔记系统 - 应用配置
+# V0.1 MVP 版本
+# ============================
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: knowledge-note-graph
+
+  # MySQL 数据源配置
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/knowledge_note?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      connection-timeout: 20000
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  # XML Mapper 路径
+  mapper-locations: classpath*:/mybatis-plus/*.xml
+  # 实体包路径
+  type-aliases-package: com.knowledge.note.module.*.entity
+  # 全局配置
+  global-config:
+    db-config:
+      # 主键自增
+      id-type: auto
+  # 控制台打印 SQL
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# 日志级别
+logging:
+  level:
+    com.knowledge.note: DEBUG
+    com.baomidou.mybatisplus: INFO
+
+# ============================
+# LLM 大模型配置（V0.2 启用）
+# 支持多模型配置，运行时通过前端切换
+# ============================
+llm:
+  # 是否启用 LLM（V0.1 关闭）
+  enabled: false
+  # 默认模型名称
+  default-model: gpt-4
+  # 模型列表配置
+  models:
+    - name: gpt-4
+      provider: openai
+      api-key: your-api-key-here
+      base-url: https://api.openai.com/v1
+      model: gpt-4
+    - name: deepseek
+      provider: deepseek
+      api-key: your-api-key-here
+      base-url: https://api.deepseek.com/v1
+      model: deepseek-chat
+    - name: qwen
+      provider: qwen
+      api-key: your-api-key-here
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      model: qwen-turbo
+
+# ============================
+# Embedding 嵌入模型配置（V0.2 启用）
+# ============================
+embedding:
+  # 默认模型：bge-large-zh-v1.5，1024维
+  model: bge-large-zh-v1.5
+  dims: 1024
+  base-url: http://localhost:8081
