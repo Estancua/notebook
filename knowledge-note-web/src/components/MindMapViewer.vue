@@ -29,7 +29,6 @@ const emit = defineEmits(['update:content', 'back'])
 const canvasRef = ref(null)
 let mindMap = null
 let resizeObserver = null
-let activeNode = null
 const toast = inject('showToast', () => {})
 let isInternalUpdate = false
 
@@ -104,7 +103,6 @@ const initMindMap = () => {
     mindMap.destroy()
     mindMap = null
   }
-  activeNode = null
 
   const data = parseMdToTree(props.content)
 
@@ -120,14 +118,6 @@ const initMindMap = () => {
     expand: true
   })
 
-  // 节点点击 → 激活并跳转笔记
-  mindMap.on('node_click', (node) => {
-    activeNode = node
-    if (node && node.nodeData && node.nodeData.data && node.nodeData.data.noteId) {
-      emit('select-note', Number(node.nodeData.data.noteId))
-    }
-  })
-
   // 结构变化同步
   mindMap.on('data_change', () => syncToMarkdown())
 
@@ -137,23 +127,14 @@ const initMindMap = () => {
 
 const addChildNode = () => {
   if (!mindMap) return
-  if (activeNode) {
-    activeNode.addChild({ text: '新节点' })
-    syncToMarkdown()
-  } else {
-    toast('请先点击选中一个节点')
-  }
+  mindMap.execCommand('INSERT_CHILD_NODE')
+  syncToMarkdown()
 }
 
 const deleteNode = () => {
   if (!mindMap) return
-  if (activeNode && !activeNode.isRoot) {
-    activeNode.remove()
-    activeNode = null
-    syncToMarkdown()
-  } else {
-    toast(activeNode ? '不能删除根节点' : '请先选中一个节点')
-  }
+  mindMap.execCommand('REMOVE_NODE')
+  syncToMarkdown()
 }
 
 const fitCanvas = () => mindMap && mindMap.view.fit()
