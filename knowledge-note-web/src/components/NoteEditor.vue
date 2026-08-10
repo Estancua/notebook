@@ -80,7 +80,7 @@
       </div>
 
       <!-- 思维导图视图 -->
-      <div class="mindmap-pane" v-show="mode === 'mindmap'">
+      <div class="mindmap-pane" v-if="mode === 'mindmap'">
         <MindMapViewer
           :content="content"
           @update:content="onMindmapUpdate"
