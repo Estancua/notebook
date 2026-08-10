@@ -24,6 +24,8 @@
       <button class="tool-btn" title="代码块" @click="wrapText('`')">&lt;/&gt;</button>
       <span class="toolbar-sep"></span>
       </template>
+      <button class="tool-btn" title="文档管理" @click="$emit('toggle-document-preview')">📄</button>
+      <span class="toolbar-sep"></span>
       <button class="tool-btn" @click="save" title="保存 (Ctrl+S)">💾 保存</button>
       <span class="toolbar-sep"></span>
       <button
@@ -106,7 +108,7 @@ const props = defineProps({
   noteId: { type: [Number, String], default: null }
 })
 
-const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active'])
+const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active', 'toggle-document-preview'])
 const toast = inject('showToast', () => {})
 
 const title = ref('')
