@@ -30,6 +30,7 @@ const canvasRef = ref(null)
 let mindMap = null
 let resizeObserver = null
 const toast = inject('showToast', () => {})
+let isInternalUpdate = false
 
 // 解析 Markdown 标题为树结构
 const parseMdToTree = (mdText) => {
@@ -91,6 +92,7 @@ const syncToMarkdown = () => {
     try {
       const data = mindMap.getData()
       const md = treeToMarkdown(data, 0)
+      isInternalUpdate = true
       emit('update:content', md)
     } catch { /* skip */ }
   }, 500)
@@ -161,6 +163,11 @@ const emitBack = () => {
 }
 
 watch(() => props.content, (newVal, oldVal) => {
+  // 如果是内部更新触发的，跳过，避免无限循环
+  if (isInternalUpdate) {
+    isInternalUpdate = false
+    return
+  }
   if (newVal !== oldVal) {
     nextTick(() => initMindMap())
   }
