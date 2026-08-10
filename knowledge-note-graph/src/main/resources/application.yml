@@ -10,6 +10,11 @@ spring:
   application:
     name: knowledge-note-graph
 
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
   # MySQL 数据源配置
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -48,27 +53,20 @@ logging:
 # 支持多模型配置，运行时通过前端切换
 # ============================
 llm:
-  # 是否启用 LLM（V0.1 关闭）
-  enabled: false
-  # 默认模型名称
-  default-model: gpt-4
-  # 模型列表配置
+  enabled: true
+  default-model: deepseek
   models:
-    - name: gpt-4
-      provider: openai
-      api-key: your-api-key-here
-      base-url: https://api.openai.com/v1
-      model: gpt-4
     - name: deepseek
       provider: deepseek
-      api-key: your-api-key-here
+      api-key: sk-d9d8a70011b640e29e392d8ec67aa83e
       base-url: https://api.deepseek.com/v1
       model: deepseek-chat
-    - name: qwen
-      provider: qwen
-      api-key: your-api-key-here
-      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-      model: qwen-turbo
+
+# 文件上传配置
+file:
+  upload:
+    path: ./uploads
+    max-size: 50MB
 
 # ============================
 # Embedding 嵌入模型配置（V0.2 启用）
@@ -78,3 +76,11 @@ embedding:
   model: bge-large-zh-v1.5
   dims: 1024
   base-url: http://localhost:8081
+
+# ============================
+# DeepSeek API 配置
+# ============================
+deepseek:
+  api-key: sk-d9d8a70011b640e29e392d8ec67aa83e
+  base-url: https://api.deepseek.com
+  model: deepseek-chat

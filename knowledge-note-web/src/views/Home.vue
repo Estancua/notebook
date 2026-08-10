@@ -12,12 +12,42 @@
           @select-view="onSelectView"
           @create-notebook="onCreateNotebook"
         />
+        <div class="doc-manage-area" v-if="selectedNotebookId && selectedNotebookId !== 'all'">
+          <button
+            class="doc-manage-btn"
+            :class="{ active: showDocPanel }"
+            @click="toggleDocPanel"
+            title="文档管理"
+          >📄 文档管理</button>
+        </div>
       </div>
       <!-- 中栏 -->
       <div class="center-panel" :class="{ 'mindmap-expanded': isMindmapMode }">
+        <!-- 文档管理视图 -->
+        <template v-if="showDocPanel">
+          <div class="doc-view-area">
+            <div class="doc-panel-col" :class="{ 'with-preview': docPreviewVisible }">
+              <DocumentPanel
+                :notebook-id="selectedNotebookId"
+                @close="showDocPanel = false"
+                @upload="showDocUploadDialog = true"
+                @open-note="handleOpenNote"
+                @preview-doc="handlePreviewDoc"
+              />
+            </div>
+            <div class="doc-preview-col" v-if="docPreviewVisible">
+              <PdfPreview
+                :visible="docPreviewVisible"
+                :document-id="previewDoc?.id"
+                :file-type="previewDoc?.fileType"
+                @close="closePreview"
+              />
+            </div>
+          </div>
+        </template>
         <!-- 回收站视图 -->
         <RecycleBin
-          v-if="currentView === 'recycle'"
+          v-else-if="currentView === 'recycle'"
           @close="currentView = 'all'"
         />
         <!-- 笔记列表视图 -->
@@ -40,6 +70,7 @@
           @saved="onNoteSaved"
           @word-count-change="onWordCountChange"
           @mindmap-active="onMindmapActive"
+          @toggle-document-preview="toggleDocPanel"
         />
       </div>
       <!-- 右栏（导图模式隐藏） -->
@@ -70,6 +101,11 @@
       @close="showTagManageDialog = false"
       @updated="onTagsUpdated"
     />
+    <DocumentUploadDialog
+      :visible="showDocUploadDialog"
+      @close="showDocUploadDialog = false"
+      @uploaded="handleDocUploaded"
+    />
   </div>
 </template>
 
@@ -85,6 +121,9 @@ import CreateNoteDialog from '../components/CreateNoteDialog.vue'
 import CreateNotebookDialog from '../components/CreateNotebookDialog.vue'
 import TagManageDialog from '../components/TagManageDialog.vue'
 import RecycleBin from '../views/RecycleBin.vue'
+import DocumentPanel from '../components/DocumentPanel.vue'
+import PdfPreview from '../components/PdfPreview.vue'
+import DocumentUploadDialog from '../components/DocumentUploadDialog.vue'
 import Toast from '../components/Toast.vue'
 import { getNoteDetail, saveNote } from '../api/noteApi'
 
@@ -112,6 +151,12 @@ const showCreateNoteDialog = ref(false)
 const showCreateNotebookDialog = ref(false)
 const showTagManageDialog = ref(false)
 const createNotebookParentId = ref(0)
+
+// 文档管理状态
+const showDocPanel = ref(false)
+const docPreviewVisible = ref(false)
+const previewDoc = ref(null)
+const showDocUploadDialog = ref(false)
 
 // Refs
 const noteListRef = ref(null)
@@ -247,6 +292,36 @@ const onMindmapActive = (active) => {
 const onTagsUpdated = () => {
   refreshNoteList()
 }
+
+// 文档管理
+const toggleDocPanel = () => {
+  showDocPanel.value = !showDocPanel.value
+  if (!showDocPanel.value) {
+    docPreviewVisible.value = false
+    previewDoc.value = null
+  }
+}
+
+const handlePreviewDoc = (doc) => {
+  previewDoc.value = doc
+  docPreviewVisible.value = true
+}
+
+const closePreview = () => {
+  docPreviewVisible.value = false
+  previewDoc.value = null
+}
+
+const handleDocUploaded = () => {
+  // 刷新文档列表 - DocumentPanel 通过 expose 方法
+}
+
+const handleOpenNote = (noteId) => {
+  // 关闭文档面板，打开生成的笔记
+  showDocPanel.value = false
+  docPreviewVisible.value = false
+  onSelectNote(noteId)
+}
 </script>
 
 <style scoped>
@@ -274,6 +349,46 @@ const onTagsUpdated = () => {
 .left-panel {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+.doc-manage-area {
+  padding: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+.doc-manage-btn {
+  width: 100%;
+  padding: 6px 12px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #374151;
+  text-align: left;
+}
+.doc-manage-btn:hover {
+  background: #f3f4f6;
+}
+.doc-manage-btn.active {
+  background: #dbeafe;
+  color: #2563eb;
+  border-color: #3b82f6;
+}
+.doc-view-area {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+}
+.doc-panel-col {
+  flex: 0 0 340px;
+  border-right: 1px solid #e5e7eb;
+  overflow: hidden;
+}
+.doc-panel-col.with-preview {
+  flex: 0 0 280px;
+}
+.doc-preview-col {
+  flex: 1;
   overflow: hidden;
 }
 </style>

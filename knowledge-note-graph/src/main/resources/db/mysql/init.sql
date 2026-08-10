@@ -82,3 +82,18 @@ CREATE TABLE sync_dirty_flag (
     created_at  DATETIME DEFAULT NOW()         COMMENT '标记时间',
     next_retry_at DATETIME                     COMMENT '下次重试时间'
 ) COMMENT '增量同步失败补偿标记';
+
+-- 7. 文档解析结果表（V0.1.5）
+DROP TABLE IF EXISTS document_section;
+CREATE TABLE document_section (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    notebook_id   BIGINT NOT NULL COMMENT '绑定笔记本ID',
+    file_name     VARCHAR(255) NOT NULL COMMENT '原始文件名',
+    file_path     VARCHAR(500) NOT NULL COMMENT '服务器存储路径',
+    file_type     VARCHAR(10) NOT NULL COMMENT 'PDF / DOCX',
+    parse_result  LONGTEXT COMMENT '解析结果JSON（章节树结构）',
+    full_text     LONGTEXT COMMENT '全文文本（供LLM分析用）',
+    created_at    DATETIME DEFAULT NOW() COMMENT '创建时间',
+    updated_at    DATETIME DEFAULT NOW() ON UPDATE NOW() COMMENT '更新时间',
+    INDEX idx_notebook (notebook_id)
+) COMMENT '文档解析结果（绑定笔记本）';
