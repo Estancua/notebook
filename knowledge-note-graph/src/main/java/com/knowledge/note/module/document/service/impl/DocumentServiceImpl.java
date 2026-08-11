@@ -7,18 +7,23 @@ import com.knowledge.note.common.exception.BusinessException;
 import com.knowledge.note.module.document.dto.GenerateMindmapDTO;
 import com.knowledge.note.module.document.entity.DocumentChapter;
 import com.knowledge.note.module.document.entity.DocumentSection;
+import com.knowledge.note.module.document.entity.PageOcrCache;
 import com.knowledge.note.module.document.mapper.DocumentChapterMapper;
 import com.knowledge.note.module.document.mapper.DocumentSectionMapper;
+import com.knowledge.note.module.document.mapper.PageOcrCacheMapper;
 import com.knowledge.note.module.document.service.DeepSeekService;
 import com.knowledge.note.module.document.service.DocumentService;
+import com.knowledge.note.module.document.service.VolcanoOcrService;
 import com.knowledge.note.module.document.vo.DocumentVO;
 import com.knowledge.note.module.document.vo.GenerateMindmapVO;
+import com.knowledge.note.module.document.vo.OcrPageVO;
 import com.knowledge.note.module.note.entity.Note;
 import com.knowledge.note.module.note.mapper.NoteMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
@@ -28,6 +33,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -36,6 +45,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -50,6 +60,8 @@ public class DocumentServiceImpl implements DocumentService {
     private final DocumentSectionMapper documentSectionMapper;
     private final DocumentChapterMapper documentChapterMapper;
     private final DeepSeekService deepSeekService;
+    private final VolcanoOcrService volcanoOcrService;
+    private final PageOcrCacheMapper pageOcrCacheMapper;
     private final NoteMapper noteMapper;
     private final ObjectMapper objectMapper;
 
@@ -435,6 +447,145 @@ public class DocumentServiceImpl implements DocumentService {
             result.add(child.getId());
             collectChildIds(child.getId(), result);
         }
+    }
+
+    @Override
+    public String ocrPage(Long documentId, int page) {
+        DocumentSection doc = documentSectionMapper.selectById(documentId);
+        if (doc == null) {
+            throw new BusinessException(404, "文档不存在");
+        }
+        if (!"PDF".equalsIgnoreCase(doc.getFileType())) {
+            throw new BusinessException(400, "仅支持 PDF 文档的 OCR 识别");
+        }
+        Path filePath = Paths.get(doc.getFilePath());
+        if (!Files.exists(filePath)) {
+            // 尝试用 resolveFile 逻辑
+            File f = new File(doc.getFilePath());
+            if (!f.exists()) {
+                throw new BusinessException(404, "PDF 文件不存在: " + doc.getFilePath());
+            }
+            filePath = f.toPath();
+        }
+        try (PDDocument pdfDoc = Loader.loadPDF(filePath.toFile())) {
+            int totalPages = pdfDoc.getNumberOfPages();
+            if (page < 1 || page > totalPages) {
+                throw new BusinessException(400, "页码超出范围: " + page + "，总页数: " + totalPages);
+            }
+            PDFRenderer renderer = new PDFRenderer(pdfDoc);
+            // 渲染为图片（150 DPI 平衡质量和速度）
+            BufferedImage image = renderer.renderImage(page - 1, 1.5f);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(image, "jpg", baos);
+            String base64 = Base64.getEncoder().encodeToString(baos.toByteArray());
+            log.info("OCR: documentId={} page={}/{}, imageSize={}KB",
+                    documentId, page, totalPages, baos.size() / 1024);
+            return volcanoOcrService.recognize(base64);
+        } catch (IOException e) {
+            log.error("OCR 页面渲染失败: documentId={} page={}", documentId, page, e);
+            throw new BusinessException(500, "OCR 页面渲染失败: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public OcrPageVO ocrPageWithPositions(Long documentId, int page) {
+        DocumentSection doc = documentSectionMapper.selectById(documentId);
+        if (doc == null) {
+            throw new BusinessException(404, "文档不存在");
+        }
+        if (!"PDF".equalsIgnoreCase(doc.getFileType())) {
+            throw new BusinessException(400, "仅支持 PDF 文档的 OCR 识别");
+        }
+        Path filePath = Paths.get(doc.getFilePath());
+        if (!Files.exists(filePath)) {
+            File f = new File(doc.getFilePath());
+            if (!f.exists()) {
+                throw new BusinessException(404, "PDF 文件不存在: " + doc.getFilePath());
+            }
+            filePath = f.toPath();
+        }
+        try (PDDocument pdfDoc = Loader.loadPDF(filePath.toFile())) {
+            int totalPages = pdfDoc.getNumberOfPages();
+            if (page < 1 || page > totalPages) {
+                throw new BusinessException(400, "页码超出范围: " + page + "，总页数: " + totalPages);
+            }
+            PDFRenderer renderer = new PDFRenderer(pdfDoc);
+            // 渲染为图片（2x DPI 保证清晰度）
+            BufferedImage image = renderer.renderImage(page - 1, 2.0f);
+            int pw = image.getWidth();
+            int ph = image.getHeight();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(image, "jpg", baos);
+            String base64 = Base64.getEncoder().encodeToString(baos.toByteArray());
+            log.info("OCR with positions: documentId={} page={}/{}, imageSize={}KB, {}x{}",
+                    documentId, page, totalPages, baos.size() / 1024, pw, ph);
+
+            List<OcrPageVO.TextLine> lines = volcanoOcrService.recognizeLines(base64, pw, ph);
+            return new OcrPageVO(base64, pw, ph, lines);
+        } catch (IOException e) {
+            log.error("OCR 页面渲染失败: documentId={} page={}", documentId, page, e);
+            throw new BusinessException(500, "OCR 页面渲染失败: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public OcrPageVO getPageOcrResult(Long documentId, int page) {
+        // 1. 查缓存
+        LambdaQueryWrapper<PageOcrCache> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(PageOcrCache::getDocumentId, documentId);
+        wrapper.eq(PageOcrCache::getPageNumber, page);
+        PageOcrCache cached = pageOcrCacheMapper.selectOne(wrapper);
+        if (cached != null) {
+            log.info("OCR 缓存命中: documentId={} page={}", documentId, page);
+            return buildOcrPageVOFromCache(cached);
+        }
+        // 2. 缓存未命中，执行 OCR
+        log.info("OCR 缓存未命中，执行识别: documentId={} page={}", documentId, page);
+        OcrPageVO result = ocrPageWithPositions(documentId, page);
+        // 3. 写入缓存
+        saveOcrCache(documentId, page, result);
+        return result;
+    }
+
+    private void saveOcrCache(Long documentId, int page, OcrPageVO result) {
+        try {
+            PageOcrCache entity = new PageOcrCache();
+            entity.setDocumentId(documentId);
+            entity.setPageNumber(page);
+            entity.setImageBase64(result.getImageBase64());
+            entity.setImageWidth(result.getImageWidth());
+            entity.setImageHeight(result.getImageHeight());
+            // 从 textLines 提取纯文本
+            StringBuilder textSb = new StringBuilder();
+            if (result.getTextLines() != null) {
+                for (OcrPageVO.TextLine line : result.getTextLines()) {
+                    if (textSb.length() > 0) textSb.append("\n");
+                    textSb.append(line.getText());
+                }
+            }
+            entity.setOcrText(textSb.toString());
+            entity.setTextLines(objectMapper.writeValueAsString(result.getTextLines()));
+            entity.setCreatedAt(LocalDateTime.now());
+            pageOcrCacheMapper.insert(entity);
+            log.info("OCR 结果已缓存: documentId={} page={} lines={}", documentId, page,
+                    result.getTextLines() != null ? result.getTextLines().size() : 0);
+        } catch (Exception e) {
+            log.warn("OCR 缓存写入失败（不影响主流程）: documentId={} page={}", documentId, page, e);
+        }
+    }
+
+    private OcrPageVO buildOcrPageVOFromCache(PageOcrCache cached) {
+        List<OcrPageVO.TextLine> lines = new ArrayList<>();
+        if (cached.getTextLines() != null && !cached.getTextLines().isEmpty()) {
+            try {
+                lines = objectMapper.readValue(cached.getTextLines(),
+                        new TypeReference<List<OcrPageVO.TextLine>>() {});
+            } catch (Exception e) {
+                log.warn("OCR 缓存 JSON 解析失败: {}", cached.getTextLines(), e);
+            }
+        }
+        return new OcrPageVO(cached.getImageBase64(), cached.getImageWidth(),
+                cached.getImageHeight(), lines);
     }
 
     private String extractPdfText(InputStream inputStream) throws IOException {

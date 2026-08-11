@@ -1,7 +1,5 @@
 # V0.1 PRD 产品需求文档
 
-> 最后更新：2026-08-11 — 文档上传改为手动创建章节结构（去掉 DeepSeek 自动解析）
-
 ## 文档信息
 
 | 项目 | 内容 |
@@ -34,11 +32,11 @@
 - graph/vector/knowledgeqa 模块仅创建空包占位
 
 ### 1.4 V0.1.5 新增：文档解析（2026-08-10 更新）
-- 上传 PDF/Word 文档，绑定到指定笔记本
-- **用户手动创建章节结构**（因 PDF 普遍较大且多为扫描版，不做自动 LLM 解析）
-- 章节/小节可绑定为笔记本中的笔记，支持设置页码范围
+- 上传 PDF/Word 文档，调用 DeepSeek API 解析章节/小节结构
+- 文档绑定笔记本，解析结果可手动编辑
+- 章节/小节可绑定为笔记本中的笔记
 - 支持一键生成思维导图笔记（LLM 生成 Markdown 层级结构）
-- PDF/Word 预览面板可切换显示/隐藏，支持页码跳转
+- PDF/Word 预览面板可切换显示/隐藏，支持选中复制文字
 
 ### 1.5 V0.2 新增：章节独立绑定 + 知识点导航（2026-08-11 更新）
 - 章节从 JSON 树拆分为独立 `document_chapter` 表，每个章节有唯一主键，支持 `pageStart/pageEnd` 页码元数据
@@ -123,12 +121,12 @@
 | ID | 功能 | 优先级 | 描述 |
 |----|------|--------|------|
 | DOC-01 | 上传文档 | P0 | 上传 PDF/Word 文档，绑定到指定笔记本 |
-| DOC-02 | 手动创建章节 | P0 | 上传后展开文档 → 点击「添加顶层章节」手动录入标题、层级，支持添加子章节和设置页码范围；旧版 JSON 编辑保留为兜底方案 |
+| DOC-02 | 结构解析 | P0 | 调用 DeepSeek Flash API 解析章节/小节，结果可编辑；解析时同时输出每页对应内容，推断章节 pageStart/pageEnd 写入独立章节表 |
 | DOC-03 | 文档预览 | P0 | PDF/Word 原文预览面板（浏览器原生iframe），支持 `#page=X` 锚点跳转 |
-| DOC-04 | 章节独立表拆分 | P0 | 章节存储于 `document_chapter` 独立表（含 parent_id、level、sort_order、pageStart、pageEnd、note_id），支持增删改 |
+| DOC-04 | 章节独立表拆分 | P0 | 解析结果从 JSON 树拆分为 `document_chapter` 独立表（含 parent_id、level、sort_order、pageStart、pageEnd、note_id） |
 | DOC-05 | 章节绑定笔记 | P0 | 一对一绑定：章节 → 笔记；提供「🔗选择笔记绑定」「➕新建笔记并绑定」「🧠生成脑图+自动绑定」「🔄重新绑定」「✂️解绑」五种操作 |
 | DOC-06 | 一键生成脑图 | P0 | 针对某小节调用 LLM 自动生成 Markdown 思维导图笔记；如果章节已绑定笔记则直接进入导图模式，不重复创建 |
-| DOC-07 | 文档列表 | P0 | 笔记本下关联文档列表，支持删除；展开显示章节树（带页码标识）；空章节时显示引导添加 |
+| DOC-07 | 文档列表 | P0 | 笔记本下关联文档列表，支持删除；展开显示章节树（带页码标识） |
 | DOC-08 | 章节反查 | P1 | 通过 noteId 快速反查所属章节，笔记详情接口一并返回 `bindInfo{documentId, chapterId, chapterTitle, pageStart, pageEnd}` |
 
 ### 3.8 笔记 PDF 对照与知识点导航（V0.2 新增）
@@ -740,39 +738,26 @@ DELETE /api/document/{id}          删除文档及解析数据
 POST   /api/document/{id}/generate-mindmap  一键生成思维导图（LLM）
 GET    /api/document/{id}/preview  获取文档预览（返回文件流）
 GET    /api/document/{id}/text     获取文档全文文本
-POST   /api/document/chapter       手动创建章节 { documentId, parentId, title }
-PUT    /api/document/chapter/{id}  更新章节（pageStart, pageEnd, title, content）
-DELETE /api/document/chapter/{id}  删除章节（级联删除子章节）
-GET    /api/document/chapter/list/{documentId}  获取文档章节列表
-PUT    /api/document/chapter/{id}/bind-note     章节绑定笔记
-PUT    /api/document/chapter/{id}/unbind-note   章节解绑笔记
-GET    /api/document/chapter/by-note/{noteId}   根据笔记反查章节
 ```
 
-### 4.6 文档上传与手动创建章节流程（V0.1.5 修改）
+### 4.6 文档解析与脑图生成流程（V0.1.5）
 
 ```
 用户上传 PDF/Word
-    → 选择目标笔记本（自动预选当前侧栏选中的笔记本）
+    → 选择目标笔记本
     → 前端 POST /api/document/upload (multipart/form-data)
     → 后端：
         1. 保存文件到 uploads/ 目录
-        2. 提取文档全文文本（PDFBox/POI，仅用于后续参考）
-        3. 写入 document_section 表（parseResult 初始为 "[]"）
-        4. 返回文档信息
-    → 前端提示"上传成功，请在文档面板中手动添加章节"
-
-用户创建章节
-    → 展开文档 → 点击「+ 添加顶层章节」→ 输入标题 → 确认
-    → 前端 POST /api/document/chapter { documentId, title, parentId: 0 }
-    → 后端写入 document_chapter 表，返回章节信息
-    → 支持继续添加子章节、编辑页码范围
+        2. 提取文档全文文本（PDFBox/POI）
+        3. 调用 DeepSeek Flash API 解析章节结构
+        4. 写入 document_section 表
+        5. 返回解析结果（JSON 树形结构）
+    → 前端展示章节列表，支持编辑
 
 用户点击"生成脑图"
-    → 前端 POST /api/document/{id}/generate-mindmap { sectionTitle, sectionContent, chapterId }
-    → 后端调用 LLM 为指定小节生成 Markdown 脑图
+    → 前端 POST /api/document/{id}/generate-mindmap { sectionIndex }
+    → 后端调用 DeepSeek API 为指定小节生成 Markdown 脑图
     → 创建笔记（title=章节名, content=生成的Markdown）
-    → 自动绑定 chapterId → noteId
     → 返回 noteId
     → 前端打开新笔记编辑/脑图模式
 
@@ -785,9 +770,8 @@ GET    /api/document/chapter/by-note/{noteId}   根据笔记反查章节
 ### 4.7 章节绑定 + PDF对照 + 知识点导航流程（V0.2）
 
 ```
-【阶段1：上传 + 手动创建章节 + 绑定】
-用户上传 PDF/Word → 文件保存，章节初始为空
-    → 用户手动创建章节结构（对照PDF预览逐章添加）
+【阶段1：上传解析 + 章节绑定】
+用户上传 PDF/Word → 后端解析 + 拆分写入 document_chapter 独立表
     → 文档面板章节树显示：每节带 [P.x~y] 页码标识 + 绑定状态
     → 用户操作章节：
         • 🔗绑定笔记：弹Dialog选择本笔记本下已有笔记 → PUT /document/chapter/{id}/bind-note
@@ -850,4 +834,44 @@ GET    /api/document/chapter/by-note/{noteId}   根据笔记反查章节
 
 ---
 
-文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-11（章节手动创建 + 上传修复 + Git merge main）| 状态：进行中
+### 4.8 OCR 选区 → 导图节点流程（V0.2.5）
+
+```
+用户打开 PDF → 点击 "OCR选区" 按钮
+          ↓
+    后端调用火山引擎 OCR（首次自动缓存到 page_ocr_cache 表）
+          ↓
+    渲染页面图片 + 文字叠加层（隐形文字，悬停可见）
+          ↓
+    用户在 PDF 上框选文字（类似 Word 原生选中体验）
+          ↓
+    点击 "创建导图节点" 按钮
+          ↓
+    1. 创建新笔记（选中文字作为标题和内容）
+    2. 保存 note_pdf_ref 关联（记录 PDF 页码和摘录文本）
+    3. 自动打开新笔记 → 可切换到导图模式查看/编辑
+          ↓
+    在导图模式下，节点旁显示 📖 角标
+          ↓
+    点击角标 → 跳回 PDF 对应页（知识点反向导航）
+```
+
+### V0.2.5 数据库变更
+
+| 表名 | 操作 | 说明 |
+|------|------|------|
+| `page_ocr_cache` | 新建 | 按 (document_id, page_number) 缓存 OCR 结果，避免重复调用火山引擎 API |
+
+### V0.2.5 组件树变更
+
+```
+Home.vue
+  └─ PdfPreview.vue  (新增 ocrMode + 文字叠加层)
+       ├─ iframe 模式（普通预览）
+       └─ OCR选区模式（image + .ocr-text-overlay 文字层）
+            └─ 选中文字 → emit('createMindmapNode') → Home.vue 创建笔记+关联
+```
+
+---
+
+文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-11（章节独立绑定 + 知识点导航 + OCR选区拖拽导图）| 状态：进行中

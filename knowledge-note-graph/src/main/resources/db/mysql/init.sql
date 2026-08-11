@@ -132,3 +132,18 @@ CREATE TABLE note_pdf_ref (
     UNIQUE KEY uk_note_node (note_id, node_uid) COMMENT '同一笔记同一节点只允许一条关联',
     INDEX idx_note (note_id)
 ) COMMENT '脑图知识点节点 ↔ PDF页码 映射（知识点导航核心表）';
+
+-- 10. OCR 页面缓存表（V0.2.5 - 避免重复OCR识别）
+DROP TABLE IF EXISTS page_ocr_cache;
+CREATE TABLE page_ocr_cache (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    document_id   BIGINT NOT NULL COMMENT '所属文档ID',
+    page_number   INT NOT NULL COMMENT '页码（从1开始）',
+    image_base64  LONGTEXT COMMENT '页面渲染图片base64（JPEG）',
+    ocr_text      LONGTEXT COMMENT 'OCR识别全文（纯文本，换行分隔）',
+    text_lines    LONGTEXT COMMENT 'OCR文本行JSON [{text, x, y, width, height}]，坐标为百分比',
+    image_width   INT COMMENT '渲染图片宽度（像素）',
+    image_height  INT COMMENT '渲染图片高度（像素）',
+    created_at    DATETIME DEFAULT NOW() COMMENT '创建时间',
+    UNIQUE KEY uk_doc_page (document_id, page_number)
+) COMMENT 'OCR 页面识别结果缓存（按页缓存，避免重复调用火山引擎API）';

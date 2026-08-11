@@ -1,11 +1,9 @@
 import request from './request'
 
-// 上传文档（FormData 请求，不能带 Content-Type，由浏览器自动设置 boundary）
-export function uploadDocument(formData, onProgress) {
+// 上传文档
+export function uploadDocument(formData) {
   return request.post('/document/upload', formData, {
-    headers: { 'Content-Type': null },
-    onUploadProgress: onProgress || undefined,
-    timeout: 600000  // 大文件上传：10分钟超时
+    headers: { 'Content-Type': 'multipart/form-data' }
   })
 }
 
@@ -64,12 +62,17 @@ export function updateChapter(chapterId, data) {
   return request.put(`/document/chapter/${chapterId}`, data)
 }
 
-// 手动创建章节
-export function createChapter(data) {
-  return request.post('/document/chapter', data)
+// OCR 识别 PDF 指定页（返回纯文本）
+export function ocrPage(documentId, page) {
+  return request.post(`/document/${documentId}/ocr-page`, null, { params: { page } })
 }
 
-// 删除章节（级联删除子章节）
-export function deleteChapter(chapterId) {
-  return request.delete(`/document/chapter/${chapterId}`)
+// OCR 识别 PDF 指定页（返回带坐标的文本行 + 图片）
+export function ocrPageWithPositions(documentId, page) {
+  return request.post(`/document/${documentId}/ocr-page-with-positions`, null, { params: { page } })
+}
+
+// 获取 PDF 单页 OCR 结果（带缓存，首次自动识别并缓存）
+export function getPageOcrResult(documentId, page) {
+  return request.get(`/document/${documentId}/ocr-page-result`, { params: { page } })
 }

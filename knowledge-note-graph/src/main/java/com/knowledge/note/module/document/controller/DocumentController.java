@@ -10,6 +10,7 @@ import com.knowledge.note.module.document.mapper.DocumentSectionMapper;
 import com.knowledge.note.module.document.service.DocumentService;
 import com.knowledge.note.module.document.vo.DocumentVO;
 import com.knowledge.note.module.document.vo.GenerateMindmapVO;
+import com.knowledge.note.module.document.vo.OcrPageVO;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -237,22 +238,34 @@ public class DocumentController {
         return Result.success(documentService.getChapterByNoteId(noteId));
     }
 
+    /** OCR 识别 PDF 指定页（纯文本） */
+    @PostMapping("/{id}/ocr-page")
+    public Result<String> ocrPage(@PathVariable Long id, @RequestParam int page) {
+        return Result.success(documentService.ocrPage(id, page));
+    }
+
+    /** OCR 识别并返回图片+坐标（文字层叠加用） */
+    @PostMapping("/{id}/ocr-page-with-positions")
+    public Result<OcrPageVO> ocrPageWithPositions(@PathVariable Long id, @RequestParam int page) {
+        return Result.success(documentService.ocrPageWithPositions(id, page));
+    }
+
+    /** 获取 PDF 单页 OCR 结果（带缓存，首次识别后自动缓存） */
+    @GetMapping("/{id}/ocr-page-result")
+    public Result<OcrPageVO> getPageOcrResult(@PathVariable Long id, @RequestParam int page) {
+        return Result.success(documentService.getPageOcrResult(id, page));
+    }
+
     /** 手动创建章节 */
     @PostMapping("/chapter")
     public Result<DocumentChapter> createChapter(@RequestBody DocumentChapter chapter) {
-        if (chapter == null || chapter.getDocumentId() == null) {
-            throw new BusinessException(400, "documentId 不能为空");
-        }
-        if (chapter.getTitle() == null || chapter.getTitle().trim().isEmpty()) {
-            throw new BusinessException(400, "章节标题不能为空");
-        }
         return Result.success(documentService.createChapter(chapter));
     }
 
     /** 删除章节（级联删除子章节） */
-    @DeleteMapping("/chapter/{chapterId}")
-    public Result<Void> deleteChapter(@PathVariable Long chapterId) {
-        documentService.deleteChapter(chapterId);
+    @DeleteMapping("/chapter/{id}")
+    public Result<Void> deleteChapter(@PathVariable Long id) {
+        documentService.deleteChapter(id);
         return Result.success();
     }
 
