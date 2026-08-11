@@ -34,4 +34,7 @@ public class NoteDetailVO {
 
     /** 反向链接（哪些笔记引用了我） */
     private List<LinkVO> incomingLinks;
+
+    /** 文档章节绑定信息 */
+    private NoteBindInfoVO bindInfo;
 }

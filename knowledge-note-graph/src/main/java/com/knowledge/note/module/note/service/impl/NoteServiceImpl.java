@@ -3,6 +3,8 @@ package com.knowledge.note.module.note.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.knowledge.note.common.exception.BusinessException;
+import com.knowledge.note.module.document.entity.DocumentChapter;
+import com.knowledge.note.module.document.mapper.DocumentChapterMapper;
 import com.knowledge.note.module.innerlink.entity.NoteInnerLink;
 import com.knowledge.note.module.innerlink.mapper.NoteInnerLinkMapper;
 import com.knowledge.note.module.innerlink.service.InnerLinkService;
@@ -41,6 +43,7 @@ public class NoteServiceImpl implements NoteService {
     private final TagMapper tagMapper;
     private final InnerLinkService innerLinkService;
     private final NoteInnerLinkMapper noteInnerLinkMapper;
+    private final DocumentChapterMapper documentChapterMapper;
 
     @Override
     @Transactional
@@ -214,6 +217,21 @@ public class NoteServiceImpl implements NoteService {
         // 反向链接（谁引用了我）
         List<LinkVO> incomingLinks = innerLinkService.getIncomingLinks(note.getId());
         vo.setIncomingLinks(incomingLinks != null ? incomingLinks : Collections.emptyList());
+
+        // 文档章节绑定信息
+        LambdaQueryWrapper<DocumentChapter> chapterWrapper = new LambdaQueryWrapper<>();
+        chapterWrapper.eq(DocumentChapter::getNoteId, note.getId());
+        chapterWrapper.last("LIMIT 1");
+        DocumentChapter chapter = documentChapterMapper.selectOne(chapterWrapper);
+        if (chapter != null) {
+            NoteBindInfoVO bindInfo = new NoteBindInfoVO();
+            bindInfo.setDocumentId(chapter.getDocumentId());
+            bindInfo.setChapterId(chapter.getId());
+            bindInfo.setChapterTitle(chapter.getTitle());
+            bindInfo.setPageStart(chapter.getPageStart());
+            bindInfo.setPageEnd(chapter.getPageEnd());
+            vo.setBindInfo(bindInfo);
+        }
 
         return vo;
     }

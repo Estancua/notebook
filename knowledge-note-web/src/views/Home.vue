@@ -33,6 +33,7 @@
                 @upload="showDocUploadDialog = true"
                 @open-note="handleOpenNote"
                 @preview-doc="handlePreviewDoc"
+                @jump-page="handleJumpPage"
               />
             </div>
             <div class="doc-preview-col" v-if="docPreviewVisible">
@@ -40,6 +41,7 @@
                 :visible="docPreviewVisible"
                 :document-id="previewDoc?.id"
                 :file-type="previewDoc?.fileType"
+                :page="previewPage"
                 @close="closePreview"
               />
             </div>
@@ -103,6 +105,7 @@
     />
     <DocumentUploadDialog
       :visible="showDocUploadDialog"
+      :default-notebook-id="selectedNotebookId"
       @close="showDocUploadDialog = false"
       @uploaded="handleDocUploaded"
     />
@@ -156,6 +159,7 @@ const createNotebookParentId = ref(0)
 const showDocPanel = ref(false)
 const docPreviewVisible = ref(false)
 const previewDoc = ref(null)
+const previewPage = ref(null)
 const showDocUploadDialog = ref(false)
 
 // Refs
@@ -304,12 +308,25 @@ const toggleDocPanel = () => {
 
 const handlePreviewDoc = (doc) => {
   previewDoc.value = doc
+  previewPage.value = null
   docPreviewVisible.value = true
+}
+
+const handleJumpPage = ({ documentId, page }) => {
+  // 确保对应文档已在预览；如未匹配，尝试从已加载文档列表找（DocumentPanel会先发preview-doc，这里兜底）
+  if (previewDoc.value == null || String(previewDoc.value.id) !== String(documentId)) {
+    // 没有的话也尝试设置页面，等下preview-doc来后会触发渲染
+  }
+  if (page && page >= 1) {
+    previewPage.value = page
+    docPreviewVisible.value = true
+  }
 }
 
 const closePreview = () => {
   docPreviewVisible.value = false
   previewDoc.value = null
+  previewPage.value = null
 }
 
 const handleDocUploaded = () => {
