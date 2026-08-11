@@ -89,3 +89,12 @@ deepseek:
   api-key: sk-d9d8a70011b640e29e392d8ec67aa83e
   base-url: https://api.deepseek.com
   model: deepseek-chat
+
+# ============================
+# 火山引擎 OCR 配置
+# ============================
+volcano:
+  ak: ${VOLCANO_AK:}
+  sk: ${VOLCANO_SK:}
+  region: cn-north-1
+  endpoint: visual.volcengineapi.com

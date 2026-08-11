@@ -4,6 +4,7 @@ import com.knowledge.note.module.document.dto.GenerateMindmapDTO;
 import com.knowledge.note.module.document.entity.DocumentChapter;
 import com.knowledge.note.module.document.vo.DocumentVO;
 import com.knowledge.note.module.document.vo.GenerateMindmapVO;
+import com.knowledge.note.module.document.vo.OcrPageVO;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -38,9 +39,29 @@ public interface DocumentService {
      */
     DocumentChapter updateChapter(Long chapterId, DocumentChapter update);
 
-    /** 手动创建章节 */
+    /**
+     * OCR 识别 PDF 单页文本
+     */
+    String ocrPage(Long documentId, int page);
+
+    /**
+     * OCR 识别 PDF 单页文本（带坐标），用于可视化选区
+     */
+    OcrPageVO ocrPageWithPositions(Long documentId, int page);
+
+    /**
+     * 手动创建文档章节
+     */
     DocumentChapter createChapter(DocumentChapter chapter);
 
-    /** 删除章节（级联删除子章节） */
+    /**
+     * 删除章节（级联删除子章节）
+     */
     void deleteChapter(Long chapterId);
+
+    /**
+     * 获取 PDF 单页 OCR 结果（带缓存，避免重复调用火山引擎API）
+     * @return OcrPageVO 包含页面图片 + 文字行坐标
+     */
+    OcrPageVO getPageOcrResult(Long documentId, int page);
 }

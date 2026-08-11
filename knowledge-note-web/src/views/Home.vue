@@ -43,6 +43,7 @@
                 :file-type="previewDoc?.fileType"
                 :page="previewPage"
                 @close="closePreview"
+                @create-mindmap-node="handleCreateOcrMindmapNode"
               />
             </div>
           </div>
@@ -105,7 +106,6 @@
     />
     <DocumentUploadDialog
       :visible="showDocUploadDialog"
-      :default-notebook-id="selectedNotebookId"
       @close="showDocUploadDialog = false"
       @uploaded="handleDocUploaded"
     />
@@ -129,6 +129,7 @@ import PdfPreview from '../components/PdfPreview.vue'
 import DocumentUploadDialog from '../components/DocumentUploadDialog.vue'
 import Toast from '../components/Toast.vue'
 import { getNoteDetail, saveNote } from '../api/noteApi'
+import { savePdfRef } from '../api/noteApi'
 
 // 当前视图：all / favorites / note / recycle
 const currentView = ref('all')
@@ -338,6 +339,49 @@ const handleOpenNote = (noteId) => {
   showDocPanel.value = false
   docPreviewVisible.value = false
   onSelectNote(noteId)
+}
+
+// OCR文字 → 导图节点
+const handleCreateOcrMindmapNode = async (payload) => {
+  const showToast = (msg, type) => toastRef.value?.show(msg, type || 'info')
+  const { text, documentId, page, pageStart, pageEnd } = payload
+  if (!text || !selectedNotebookId.value || selectedNotebookId.value === 'all') {
+    showToast('请先选择一个笔记本', 'warn')
+    return
+  }
+  try {
+    // 1. 创建新笔记，内容为 OCR 选中的文字（格式化为导图 Markdown）
+    const noteTitle = text.length > 30 ? text.substring(0, 30) : text
+    const noteContent = `# ${noteTitle}\n\n${text}`
+    const savedNote = await saveNote({
+      notebookId: Number(selectedNotebookId.value),
+      title: noteTitle,
+      content: noteContent
+    })
+    const noteId = savedNote?.data?.id || savedNote?.id
+    if (!noteId) {
+      showToast('创建笔记失败', 'error')
+      return
+    }
+    // 2. 保存 PDF 页码关联
+    try {
+      await savePdfRef({
+        noteId,
+        nodeUid: 'root',
+        nodeTitle: noteTitle,
+        pageStart: pageStart || page,
+        pageEnd: pageEnd || pageStart || page,
+        excerpt: text.length > 500 ? text.substring(0, 500) : text
+      })
+    } catch (e) {
+      // ref 保存失败不影响主流程
+    }
+    // 3. 打开新笔记
+    showToast(`已创建导图笔记: ${noteTitle}`, 'success')
+    handleOpenNote(noteId)
+  } catch (e) {
+    showToast('创建笔记失败: ' + (e.response?.data?.msg || e.message), 'error')
+  }
 }
 </script>
 

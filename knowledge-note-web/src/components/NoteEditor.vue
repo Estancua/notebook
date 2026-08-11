@@ -104,24 +104,13 @@
         ></div>
         <!-- 右栏（PDF预览） -->
         <div class="editor-right" :style="{ width: (100 - leftWidth) + '%' }">
-          <div class="pdf-toolbar">
-            <button class="pdf-nav-btn" @click="prevPage" :disabled="pdfPage <= 1">◀上一页</button>
-            <input
-              v-model.number="pdfPageInput"
-              type="number"
-              min="1"
-              class="pdf-page-input"
-              @keyup.enter="jumpToPage(pdfPageInput)"
-            />
-            <button class="pdf-nav-btn" @click="jumpToPage(pdfPageInput)">跳转</button>
-            <button class="pdf-nav-btn" @click="nextPage">下一页▶</button>
-          </div>
-          <iframe
-            class="pdf-iframe"
-            :key="pdfIframeKey"
-            :src="pdfIframeSrc"
-            frameborder="0"
-          ></iframe>
+          <PdfPreview
+            :visible="true"
+            :document-id="bindInfo?.documentId"
+            file-type="PDF"
+            :page="pdfPage"
+            @close="() => {}"
+          />
         </div>
       </div>
 
@@ -210,6 +199,7 @@ import {
   deletePdfRef
 } from '../api/noteApi'
 import MindMapViewer from './MindMapViewer.vue'
+import PdfPreview from './PdfPreview.vue'
 
 const EditorContentArea = defineComponent({
   name: 'EditorContentArea',
@@ -327,8 +317,6 @@ const showPdfPanel = ref(true)
 const leftWidth = ref(60)
 const isDragging = ref(false)
 const pdfPage = ref(1)
-const pdfPageInput = ref(1)
-const pdfIframeKey = ref(0)
 
 const navDrawerVisible = ref(false)
 const navSearchKeyword = ref('')
@@ -346,17 +334,6 @@ const renderedContent = computed(() => {
   } catch {
     return content.value
   }
-})
-
-const pdfIframeSrc = computed(() => {
-  if (!bindInfo.value || !bindInfo.value.documentId) return ''
-  const page = pdfPage.value || bindInfo.value.pageStart || 1
-  return `/api/document/${bindInfo.value.documentId}/preview?_t=${pdfIframeKey.value}#page=${page}`
-})
-
-// 页码变化时强制刷新 iframe（否则仅改#page=N不会触发PDF跳转）
-watch(pdfPage, () => {
-  pdfIframeKey.value++
 })
 
 const filteredPdfRefs = computed(() => {
@@ -380,7 +357,6 @@ const loadNote = async () => {
       bindInfo.value = data.bindInfo || null
       if (bindInfo.value) {
         pdfPage.value = bindInfo.value.pageStart || 1
-        pdfPageInput.value = pdfPage.value
       }
     }
   } catch (e) { /* handled */ }
@@ -412,7 +388,6 @@ watch(() => props.noteId, (newId) => {
     showPdfPanel.value = true
     leftWidth.value = 60
     pdfPage.value = 1
-    pdfPageInput.value = 1
   }
 }, { immediate: true })
 
@@ -617,32 +592,15 @@ const onSplitterMouseUp = () => {
   window.removeEventListener('mouseup', onSplitterMouseUp)
 }
 
-// PDF 导航
-const prevPage = () => {
-  if (pdfPage.value > 1) {
-    pdfPage.value--
-    pdfPageInput.value = pdfPage.value
-  }
-}
-
-const nextPage = () => {
-  pdfPage.value++
-  pdfPageInput.value = pdfPage.value
-}
-
+// PDF 导航（简化版，实际翻页由 PdfPreview 组件处理）
 const jumpToPage = (p) => {
   const n = Number(p)
-  if (n >= 1) {
-    pdfPage.value = n
-    pdfPageInput.value = n
-  }
+  if (n >= 1) pdfPage.value = n
 }
 
-const onJumpPdfPage = ({ pageStart, ref }) => {
-  if (showPdfPanel.value && bindInfo.value) {
-    jumpToPage(pageStart)
-  } else {
-    toast(`跳转到 P.${pageStart}${ref && ref.nodeTitle ? ' - ' + ref.nodeTitle : ''}`, 'info')
+const onJumpPdfPage = ({ pageStart }) => {
+  if (pageStart >= 1) {
+    pdfPage.value = pageStart
   }
 }
 
