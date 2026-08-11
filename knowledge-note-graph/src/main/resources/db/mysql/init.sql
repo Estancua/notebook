@@ -91,9 +91,44 @@ CREATE TABLE document_section (
     file_name     VARCHAR(255) NOT NULL COMMENT '原始文件名',
     file_path     VARCHAR(500) NOT NULL COMMENT '服务器存储路径',
     file_type     VARCHAR(10) NOT NULL COMMENT 'PDF / DOCX',
-    parse_result  LONGTEXT COMMENT '解析结果JSON（章节树结构）',
+    parse_result  LONGTEXT COMMENT '解析结果JSON（章节树结构，保留用于向后兼容）',
     full_text     LONGTEXT COMMENT '全文文本（供LLM分析用）',
     created_at    DATETIME DEFAULT NOW() COMMENT '创建时间',
     updated_at    DATETIME DEFAULT NOW() ON UPDATE NOW() COMMENT '更新时间',
     INDEX idx_notebook (notebook_id)
 ) COMMENT '文档解析结果（绑定笔记本）';
+
+-- 8. 文档章节表（V0.2 - 每个章节一条记录，支持绑定笔记 + 页码）
+DROP TABLE IF EXISTS document_chapter;
+CREATE TABLE document_chapter (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    document_id   BIGINT NOT NULL COMMENT '所属文档ID（FK document_section.id）',
+    parent_id     BIGINT DEFAULT 0 COMMENT '父章节ID，0=顶级章节',
+    title         VARCHAR(500) NOT NULL COMMENT '章节标题',
+    level         TINYINT NOT NULL DEFAULT 1 COMMENT '层级 1-6（对应Markdown标题级别）',
+    content       LONGTEXT COMMENT '章节正文内容',
+    page_start    INT COMMENT '起始页码（null表示未知）',
+    page_end      INT COMMENT '结束页码（null表示未知或单页）',
+    note_id       BIGINT UNIQUE COMMENT '绑定的笔记ID（一对一，唯一约束；空=未绑定）',
+    sort_order    INT DEFAULT 0 COMMENT '同级排序序号',
+    created_at    DATETIME DEFAULT NOW() COMMENT '创建时间',
+    updated_at    DATETIME DEFAULT NOW() ON UPDATE NOW() COMMENT '更新时间',
+    INDEX idx_document (document_id),
+    INDEX idx_parent (parent_id),
+    INDEX idx_note (note_id)
+) COMMENT '文档章节（拆分自document_section.parse_result，支持一对一绑定笔记+页码导航）';
+
+-- 9. 笔记知识点-PDF页码关联表（V0.2 - 脑图节点 ↔ PDF页码 映射）
+DROP TABLE IF EXISTS note_pdf_ref;
+CREATE TABLE note_pdf_ref (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    note_id       BIGINT NOT NULL COMMENT '所属笔记ID',
+    node_uid      VARCHAR(100) NOT NULL COMMENT 'simple-mind-map 节点唯一ID（库自带uid）',
+    node_title    VARCHAR(500) COMMENT '节点标题快照（冗余，用于导航面板展示）',
+    page_start    INT NOT NULL COMMENT '关联起始页码',
+    page_end      INT COMMENT '关联结束页码（null=仅单页）',
+    excerpt       VARCHAR(1000) COMMENT '原文摘录（可选，用户手填）',
+    created_at    DATETIME DEFAULT NOW() COMMENT '关联时间',
+    UNIQUE KEY uk_note_node (note_id, node_uid) COMMENT '同一笔记同一节点只允许一条关联',
+    INDEX idx_note (note_id)
+) COMMENT '脑图知识点节点 ↔ PDF页码 映射（知识点导航核心表）';

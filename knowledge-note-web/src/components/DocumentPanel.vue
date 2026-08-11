@@ -21,7 +21,7 @@
             </div>
             <div class="doc-actions">
               <button class="btn-small" @click="previewDoc(doc)">预览</button>
-              <button class="btn-small" @click="toggleSections(doc.id)">
+              <button class="btn-small" @click="toggleSections(doc)">
                 {{ expandedId === doc.id ? '收起' : '展开' }}
               </button>
               <button class="btn-small danger" @click="onDelete(doc.id)">删除</button>
@@ -41,24 +41,98 @@
               </div>
             </div>
             <div v-else>
-              <div
-                v-for="(section, idx) in (parseSections(doc))"
-                :key="idx"
-                class="section-item"
-                :style="{ paddingLeft: ((section.level || 1) - 1) * 16 + 12 + 'px' }"
-              >
-                <span class="section-title">{{ section.title }}</span>
-                <button
-                  class="btn-small"
-                  :disabled="generatingSection && generatingSection.key === idx"
-                  @click="generateMindmapForSection(doc.id, section, idx)"
-                >
-                  {{ (generatingSection && generatingSection.key === idx) ? '生成中...' : '生成脑图' }}
-                </button>
-              </div>
+              <div v-if="chapterLoading[doc.id]" class="loading-state small">加载章节中...</div>
+              <template v-else>
+                <div v-if="(chapterTrees[doc.id] || []).length === 0" class="empty-chapters">
+                  <p>暂无章节，请手动创建：</p>
+                  <button class="btn-small btn-primary" @click="openCreateChapterDialog({ documentId: doc.id, parentId: 0 })">
+                    + 添加第一个章节
+                  </button>
+                  <p class="empty-hint">
+                    提示：可对照 PDF 预览，逐章创建目录结构<br />
+                    创建后可绑定笔记、设置页码范围、一键生成思维导图
+                  </p>
+                </div>
+                <template v-for="chapter in chapterTrees[doc.id] || []" :key="chapter.id">
+                  <ChapterItem
+                    :chapter="chapter"
+                    :level="1"
+                    :doc-notebook-id="doc.notebookId || notebookId"
+                    :document-id="doc.id"
+                    @bind="openBindDialog"
+                    @create-bind="createAndBindNote"
+                    @unbind="handleUnbind"
+                    @generate-mindmap="generateMindmapForChapter"
+                    @open-note="openNote"
+                    @update-chapter="onChapterUpdated"
+                    @jump-page="onJumpPage"
+                    @delete-chapter="handleDeleteChapter"
+                    @add-child-chapter="openCreateChapterDialog"
+                  />
+                </template>
+                <div v-if="(chapterTrees[doc.id] || []).length > 0" class="add-chapter-bar">
+                  <button class="btn-link" @click="openCreateChapterDialog({ documentId: doc.id, parentId: 0 })">
+                    + 添加顶层章节
+                  </button>
+                </div>
+              </template>
               <button class="btn-link" @click="startEdit(doc)">编辑章节</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 绑定笔记对话框 -->
+    <div v-if="bindDialogVisible" class="dialog-overlay" @click.self="bindDialogVisible = false">
+      <div class="dialog">
+        <div class="dialog-header">
+          <span>绑定笔记 - {{ bindDialogChapter?.title }}</span>
+          <button class="close-btn" @click="bindDialogVisible = false">✕</button>
+        </div>
+        <div class="dialog-body">
+          <div class="form-group">
+            <label class="form-label">选择笔记</label>
+            <select v-model="selectedBindNoteId" class="form-input">
+              <option value="">-- 请选择 --</option>
+              <option v-for="note in availableNotes" :key="note.id" :value="note.id">
+                {{ note.title }}
+              </option>
+            </select>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button class="btn-small" @click="bindDialogVisible = false">取消</button>
+          <button class="btn-small btn-primary" @click="confirmBind" :disabled="!selectedBindNoteId">
+            确认绑定
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 创建章节对话框 -->
+    <div v-if="createChapterVisible" class="dialog-overlay" @click.self="createChapterVisible = false">
+      <div class="dialog">
+        <div class="dialog-header">
+          <span>添加章节</span>
+          <button class="close-btn" @click="createChapterVisible = false">✕</button>
+        </div>
+        <div class="dialog-body">
+          <div class="form-group">
+            <label class="form-label">章节标题</label>
+            <input v-model="createChapterTitle" class="form-input" placeholder="例如：第一章 绪论"
+              @keyup.enter="confirmCreateChapter" />
+          </div>
+          <div class="form-group" v-if="createChapterParentId !== 0">
+            <label class="form-label">父章节</label>
+            <span class="form-hint">将作为子章节添加</span>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button class="btn-small" @click="createChapterVisible = false">取消</button>
+          <button class="btn-small btn-primary" @click="confirmCreateChapter" :disabled="!createChapterTitle.trim()">
+            确认添加
+          </button>
         </div>
       </div>
     </div>
@@ -66,19 +140,245 @@
 </template>
 
 <script setup>
-import { ref, watch, inject } from 'vue'
+import { ref, watch, inject, h } from 'vue'
 import {
   getDocumentsByNotebook,
   updateParseResult,
   deleteDocument,
   generateMindmap,
-  getDocumentText
+  getDocumentText,
+  getChapterList,
+  bindChapterNote,
+  unbindChapterNote,
+  updateChapter,
+  createChapter,
+  deleteChapter
 } from '../api/documentApi'
+import { saveNote, listByNotebook } from '../api/noteApi'
+
+const ChapterItem = {
+  name: 'ChapterItem',
+  props: {
+    chapter: { type: Object, required: true },
+    level: { type: Number, default: 1 },
+    docNotebookId: { type: [Number, String], default: null },
+    documentId: { type: [Number, String], required: true }
+  },
+  emits: ['bind', 'create-bind', 'unbind', 'generate-mindmap', 'open-note', 'update-chapter', 'jump-page', 'delete-chapter', 'add-child-chapter'],
+  setup(props, { emit }) {
+    const toast = inject('showToast', () => {})
+    const generating = ref(false)
+    const editingPage = ref(false)
+    const saving = ref(false)
+    const inputStart = ref(null)
+    const inputEnd = ref(null)
+
+    const startEditPage = () => {
+      inputStart.value = props.chapter.pageStart || ''
+      inputEnd.value = props.chapter.pageEnd || props.chapter.pageStart || ''
+      editingPage.value = true
+    }
+    const cancelEditPage = () => {
+      editingPage.value = false
+      inputStart.value = null
+      inputEnd.value = null
+    }
+    const saveEditPage = async () => {
+      const s = parseInt(inputStart.value, 10)
+      const e = parseInt(inputEnd.value, 10)
+      const payload = {}
+      if (!isNaN(s) && s >= 1) payload.pageStart = s
+      if (!isNaN(e) && e >= 1) payload.pageEnd = e
+      if (payload.pageStart && payload.pageEnd && payload.pageEnd < payload.pageStart) {
+        toast('结束页不能小于起始页', 'error'); return
+      }
+      if (!payload.pageStart && !payload.pageEnd) {
+        // 两者都空 => 相当于清空，传 0 或 null？这里传null，但后端只处理非null，所以传null不会更新。
+        // 允许用户"清空页码"的话就用 0 触发清除。但我们后端要求>=1，这里改为：若用户删空且都没值，则传空，作为不更新。
+        // 想清除页码：用两个都填 null，但我们后端更新时null字段不更新。所以要加个特殊逻辑：当用户传 pageStart=0 表示清除？
+        // 为简化，这里提示至少填起始页。
+        toast('请至少填写起始页码（>=1），或点击取消', 'error'); return
+      }
+      saving.value = true
+      try {
+        const updated = await updateChapter(props.chapter.id, payload)
+        toast('页码已保存', 'success')
+        // 把 props.chapter 上对应字段改掉（父级会通过 onChapterUpdated 刷新章节树，所以这里只需关闭编辑态）
+        emit('update-chapter', { chapterId: props.chapter.id, updated })
+        editingPage.value = false
+      } catch (e) {
+        // handled
+      } finally {
+        saving.value = false
+      }
+    }
+
+    const pageDisplay = () => {
+      if (props.chapter.pageStart != null) {
+        const end = props.chapter.pageEnd || props.chapter.pageStart
+        return `[P.${props.chapter.pageStart}~${end}]`
+      }
+      return '[未绑页码]'
+    }
+
+    const hasBind = () => {
+      return !!(props.chapter.noteId || props.chapter.noteTitle)
+    }
+
+    const handleGenerate = () => {
+      if (generating.value) return
+      generating.value = true
+      emit('generate-mindmap', {
+        chapter: props.chapter,
+        documentId: props.documentId,
+        onDone: () => { generating.value = false }
+      })
+    }
+
+    const handleJumpPdf = () => {
+      if (props.chapter.pageStart == null) {
+        toast('该章节还没有绑定页码，先点 ✏️页码 填一下', 'error')
+        return
+      }
+      emit('jump-page', {
+        documentId: props.documentId,
+        page: props.chapter.pageStart,
+        chapterId: props.chapter.id,
+        chapterTitle: props.chapter.title
+      })
+    }
+
+    const handleOpenNote = () => {
+      if (props.chapter.noteId) {
+        emit('open-note', props.chapter.noteId)
+      } else {
+        toast('笔记不存在', 'error')
+      }
+    }
+
+    const renderPageArea = () => {
+      if (!editingPage.value) {
+        return h('div', { class: 'page-row' }, [
+          h('span', { class: 'section-page', title: '章节对应的PDF页码范围' }, pageDisplay()),
+          h('button', {
+            class: 'btn-xsmall ghost',
+            title: '编辑该章节对应的PDF起始/结束页码',
+            onClick: startEditPage
+          }, '✏️页码'),
+          props.chapter.pageStart != null ? h('button', {
+            class: 'btn-xsmall primary',
+            title: 'PDF预览跳转到该章节起始页',
+            onClick: handleJumpPdf
+          }, '📖跳PDF') : null
+        ])
+      }
+      return h('div', { class: 'page-edit-row' }, [
+        h('input', {
+          class: 'page-num',
+          type: 'number',
+          min: 1,
+          placeholder: '起页',
+          value: inputStart.value,
+          onInput: (e) => { inputStart.value = e.target.value }
+        }),
+        h('span', { class: 'page-tilde' }, '~'),
+        h('input', {
+          class: 'page-num',
+          type: 'number',
+          min: 1,
+          placeholder: '止页(可空)',
+          value: inputEnd.value,
+          onInput: (e) => { inputEnd.value = e.target.value }
+        }),
+        h('button', {
+          class: 'btn-xsmall primary',
+          disabled: saving.value,
+          onClick: saveEditPage
+        }, saving.value ? '保存中' : '💾保存'),
+        h('button', {
+          class: 'btn-xsmall',
+          disabled: saving.value,
+          onClick: cancelEditPage
+        }, '取消')
+      ])
+    }
+
+    return () => h('div', { class: 'chapter-wrapper' }, [
+      h('div', {
+        class: 'section-item',
+        style: { paddingLeft: ((props.level || 1) - 1) * 16 + 12 + 'px' }
+      }, [
+        h('div', { class: 'section-main' }, [
+          h('span', { class: 'section-title' }, props.chapter.title),
+          renderPageArea(),
+          hasBind()
+            ? h('span', { class: 'section-bound', onClick: handleOpenNote }, [
+                '✅ ',
+                h('span', { class: 'bound-note-title' }, props.chapter.noteTitle || '已绑定笔记')
+              ])
+            : h('span', { class: 'section-unbound' }, '⭕未绑定')
+        ]),
+        h('div', { class: 'section-actions' }, [
+          !hasBind() ? h('button', {
+            class: 'btn-xsmall',
+            onClick: () => emit('bind', { chapter: props.chapter, notebookId: props.docNotebookId })
+          }, '🔗绑定') : null,
+          !hasBind() ? h('button', {
+            class: 'btn-xsmall',
+            onClick: () => emit('create-bind', { chapter: props.chapter, notebookId: props.docNotebookId })
+          }, '➕新建绑定') : null,
+          hasBind() ? h('button', {
+            class: 'btn-xsmall',
+            onClick: () => emit('bind', { chapter: props.chapter, notebookId: props.docNotebookId })
+          }, '🔄重绑') : null,
+          hasBind() ? h('button', {
+            class: 'btn-xsmall',
+            onClick: () => emit('unbind', props.chapter)
+          }, '✂️解绑') : null,
+          h('button', {
+            class: 'btn-xsmall',
+            disabled: generating.value,
+            onClick: handleGenerate
+          }, generating.value ? '生成中...' : '🧠脑图'),
+          h('button', {
+            class: 'btn-xsmall',
+            onClick: () => emit('add-child-chapter', { documentId: props.documentId, parentId: props.chapter.id })
+          }, '➕子章节'),
+          h('button', {
+            class: 'btn-xsmall danger',
+            onClick: () => {
+              if (confirm(`确定删除章节 "${props.chapter.title}" 及其子章节吗？`)) {
+                emit('delete-chapter', props.chapter)
+              }
+            }
+          }, '🗑️删除')
+        ])
+      ]),
+      ...(props.chapter.children || []).map(child =>
+        h(ChapterItem, {
+          chapter: child,
+          level: props.level + 1,
+          docNotebookId: props.docNotebookId,
+          documentId: props.documentId,
+          onBind: (d) => emit('bind', d),
+          onCreateBind: (d) => emit('create-bind', d),
+          onUnbind: (c) => emit('unbind', c),
+          onGenerateMindmap: (d) => emit('generate-mindmap', d),
+          onOpenNote: (id) => emit('open-note', id),
+          onUpdateChapter: (d) => emit('update-chapter', d),
+          onJumpPage: (d) => emit('jump-page', d),
+          onDeleteChapter: (c) => emit('delete-chapter', c),
+          onAddChildChapter: (d) => emit('add-child-chapter', d)
+        })
+      )
+    ])
+  }
+}
 
 const props = defineProps({
   notebookId: { type: [Number, String], default: null }
 })
-const emit = defineEmits(['close', 'upload', 'open-note', 'preview-doc'])
+const emit = defineEmits(['close', 'upload', 'open-note', 'preview-doc', 'jump-page'])
 const toast = inject('showToast', () => {})
 
 const loading = ref(false)
@@ -86,7 +386,21 @@ const documents = ref([])
 const expandedId = ref(null)
 const editingDocId = ref(null)
 const editText = ref('')
-const generatingSection = ref(null)
+
+const chapterTrees = ref({})
+const chapterLoading = ref({})
+
+const bindDialogVisible = ref(false)
+const bindDialogChapter = ref(null)
+const bindDialogNotebookId = ref(null)
+const selectedBindNoteId = ref('')
+const availableNotes = ref([])
+
+// 创建章节对话框
+const createChapterVisible = ref(false)
+const createChapterDocumentId = ref(null)
+const createChapterParentId = ref(0)
+const createChapterTitle = ref('')
 
 const loadDocuments = async () => {
   if (!props.notebookId) return
@@ -108,20 +422,43 @@ watch(() => props.notebookId, (newId) => {
   }
 }, { immediate: true })
 
-const parseSections = (doc) => {
-  if (!doc.parseResult) return []
+const buildTree = (flatList) => {
+  const map = {}
+  const roots = []
+  const list = Array.isArray(flatList) ? flatList : []
+  list.forEach(item => {
+    map[item.id] = { ...item, children: [] }
+  })
+  list.forEach(item => {
+    const node = map[item.id]
+    if (item.parentId && map[item.parentId]) {
+      map[item.parentId].children.push(node)
+    } else {
+      roots.push(node)
+    }
+  })
+  return roots
+}
+
+const loadChapters = async (doc) => {
+  chapterLoading.value[doc.id] = true
   try {
-    const result = typeof doc.parseResult === 'string'
-      ? JSON.parse(doc.parseResult)
-      : doc.parseResult
-    return Array.isArray(result) ? result : []
-  } catch {
-    return []
+    const list = await getChapterList(doc.id)
+    chapterTrees.value[doc.id] = buildTree(list)
+  } catch (e) {
+    chapterTrees.value[doc.id] = []
+  } finally {
+    chapterLoading.value[doc.id] = false
   }
 }
 
-const toggleSections = (id) => {
-  expandedId.value = expandedId.value === id ? null : id
+const toggleSections = (doc) => {
+  if (expandedId.value === doc.id) {
+    expandedId.value = null
+  } else {
+    expandedId.value = doc.id
+    loadChapters(doc)
+  }
   editingDocId.value = null
 }
 
@@ -144,7 +481,12 @@ const saveEdit = async (id) => {
     toast('章节更新成功', 'success')
     editingDocId.value = null
     editText.value = ''
+    chapterTrees.value[id] = null
     await loadDocuments()
+    const doc = documents.value.find(d => d.id === id)
+    if (doc && expandedId.value === id) {
+      loadChapters(doc)
+    }
   } catch (e) {
     if (e instanceof SyntaxError) {
       toast('JSON 格式错误，请检查', 'error')
@@ -158,6 +500,8 @@ const onDelete = async (id) => {
     await deleteDocument(id)
     toast('文档已删除', 'success')
     if (expandedId.value === id) expandedId.value = null
+    delete chapterTrees.value[id]
+    delete chapterLoading.value[id]
     await loadDocuments()
   } catch (e) { /* handled */ }
 }
@@ -166,21 +510,53 @@ const previewDoc = (doc) => {
   emit('preview-doc', doc)
 }
 
-const generateMindmapForSection = async (docId, section, idx) => {
-  generatingSection.value = { key: idx }
+const openNote = (noteId) => {
+  emit('open-note', noteId)
+}
+
+// 单个章节页码保存后，刷新文档的章节树以便展示最新pageStart/pageEnd
+const onChapterUpdated = async ({ chapterId, updated }) => {
+  // 找到章节属于哪个 doc
+  for (const doc of documents.value) {
+    const tree = chapterTrees.value[doc.id]
+    if (tree && treeContains(tree, chapterId)) {
+      chapterTrees.value[doc.id] = null
+      await loadChapters(doc)
+      return
+    }
+  }
+}
+
+const onJumpPage = (payload) => {
+  // 先确保该文档处于预览状态
+  const doc = documents.value.find(d => String(d.id) === String(payload.documentId))
+  if (doc) emit('preview-doc', doc)
+  emit('jump-page', payload)
+}
+
+const generateMindmapForChapter = async ({ chapter, documentId, onDone }) => {
   try {
-    const fullText = await getDocumentText(docId)
-    const sectionContent = extractSectionContent(fullText, section.title)
-    const result = await generateMindmap(docId, {
-      sectionTitle: section.title,
-      sectionContent
+    const fullText = await getDocumentText(documentId)
+    const sectionContent = extractSectionContent(fullText, chapter.title)
+    const result = await generateMindmap(documentId, {
+      sectionTitle: chapter.title,
+      sectionContent,
+      chapterId: chapter.id
     })
     toast('思维导图生成成功', 'success')
     if (result && result.noteId) {
+      try {
+        await bindChapterNote(chapter.id, result.noteId)
+        const doc = documents.value.find(d => d.id === documentId)
+        if (doc) {
+          chapterTrees.value[doc.id] = null
+          loadChapters(doc)
+        }
+      } catch (e) { /* ignore bind error */ }
       emit('open-note', result.noteId)
     }
   } catch (e) { /* handled */ } finally {
-    generatingSection.value = null
+    onDone && onDone()
   }
 }
 
@@ -197,6 +573,131 @@ const extractSectionContent = (fullText, sectionTitle) => {
     ? startIdx + match[0].length + nextHeading.index
     : fullText.length
   return fullText.substring(startIdx, endIdx)
+}
+
+const openBindDialog = async ({ chapter, notebookId }) => {
+  bindDialogChapter.value = chapter
+  bindDialogNotebookId.value = notebookId
+  selectedBindNoteId.value = chapter.noteId || ''
+  availableNotes.value = []
+  try {
+    const nbId = notebookId || props.notebookId
+    if (nbId) {
+      const data = await listByNotebook(nbId)
+      availableNotes.value = (data && data.records) ? data.records : []
+    }
+  } catch (e) { /* handled */ }
+  bindDialogVisible.value = true
+}
+
+const confirmBind = async () => {
+  if (!bindDialogChapter.value || !selectedBindNoteId.value) return
+  try {
+    await bindChapterNote(bindDialogChapter.value.id, selectedBindNoteId.value)
+    toast('绑定成功', 'success')
+    bindDialogVisible.value = false
+    const doc = documents.value.find(d => {
+      return chapterTrees.value[d.id] && treeContains(chapterTrees.value[d.id], bindDialogChapter.value.id)
+    })
+    if (doc) {
+      chapterTrees.value[doc.id] = null
+      loadChapters(doc)
+    }
+  } catch (e) { /* handled */ }
+}
+
+const treeContains = (nodes, id) => {
+  for (const n of nodes) {
+    if (n.id === id) return true
+    if (n.children && n.children.length) {
+      if (treeContains(n.children, id)) return true
+    }
+  }
+  return false
+}
+
+const createAndBindNote = async ({ chapter, notebookId }) => {
+  if (!chapter) return
+  const nbId = notebookId || props.notebookId
+  if (!nbId) {
+    toast('缺少笔记本信息', 'error')
+    return
+  }
+  try {
+    const result = await saveNote({
+      notebookId: nbId,
+      title: chapter.title,
+      content: ''
+    })
+    const noteId = result && (result.id || result)
+    if (noteId) {
+      await bindChapterNote(chapter.id, noteId)
+      toast('新建笔记并绑定成功', 'success')
+      const doc = documents.value.find(d => {
+        return chapterTrees.value[d.id] && treeContains(chapterTrees.value[d.id], chapter.id)
+      })
+      if (doc) {
+        chapterTrees.value[doc.id] = null
+        loadChapters(doc)
+      }
+    }
+  } catch (e) { /* handled */ }
+}
+
+const handleUnbind = async (chapter) => {
+  if (!chapter || !confirm('确定要解绑该章节与笔记的关联吗？')) return
+  try {
+    await unbindChapterNote(chapter.id)
+    toast('解绑成功', 'success')
+    const doc = documents.value.find(d => {
+      return chapterTrees.value[d.id] && treeContains(chapterTrees.value[d.id], chapter.id)
+    })
+    if (doc) {
+      chapterTrees.value[doc.id] = null
+      loadChapters(doc)
+    }
+  } catch (e) { /* handled */ }
+}
+
+const openCreateChapterDialog = ({ documentId, parentId }) => {
+  createChapterDocumentId.value = documentId
+  createChapterParentId.value = parentId
+  createChapterTitle.value = ''
+  createChapterVisible.value = true
+}
+
+const confirmCreateChapter = async () => {
+  const title = createChapterTitle.value.trim()
+  if (!title || !createChapterDocumentId.value) return
+  try {
+    await createChapter({
+      documentId: createChapterDocumentId.value,
+      parentId: createChapterParentId.value,
+      title: title
+    })
+    toast('章节添加成功', 'success')
+    createChapterVisible.value = false
+    const doc = documents.value.find(d => String(d.id) === String(createChapterDocumentId.value))
+    if (doc) {
+      chapterTrees.value[doc.id] = null
+      loadChapters(doc)
+    }
+  } catch (e) { /* handled */ }
+}
+
+const handleDeleteChapter = async (chapter) => {
+  if (!chapter) return
+  try {
+    await deleteChapter(chapter.id)
+    toast('章节已删除', 'success')
+    const doc = documents.value.find(d => {
+      return chapterTrees.value[d.id] && treeContains(chapterTrees.value[d.id], chapter.id)
+    })
+    if (doc) {
+      chapterTrees.value[doc.id] = null
+      loadChapters(doc)
+    }
+  } catch (e) { /* handled */ }
 }
 
 defineExpose({ loadDocuments })
@@ -249,6 +750,10 @@ defineExpose({ loadDocuments })
   padding: 40px 20px;
   color: #9ca3af;
   font-size: 14px;
+}
+.loading-state.small {
+  padding: 20px;
+  font-size: 12px;
 }
 .doc-item {
   border: 1px solid #e5e7eb;
@@ -313,6 +818,50 @@ defineExpose({ loadDocuments })
 .btn-small.danger:hover {
   background: #fef2f2;
 }
+.btn-small.btn-primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+.btn-small.btn-primary:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.btn-xsmall {
+  padding: 2px 6px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #374151;
+  white-space: nowrap;
+}
+.btn-xsmall:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+.btn-xsmall:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-xsmall.primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+.btn-xsmall.primary:hover:not(:disabled) {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.btn-xsmall.ghost {
+  border-style: dashed;
+  color: #3b82f6;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.btn-xsmall.ghost:hover:not(:disabled) {
+  background: #dbeafe;
+}
 .sections {
   padding: 8px 0;
   border-top: 1px solid #e5e7eb;
@@ -320,12 +869,78 @@ defineExpose({ loadDocuments })
 .section-item {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 6px 14px;
+  align-items: flex-start;
+  padding: 8px 14px;
+  gap: 8px;
+  border-bottom: 1px dashed #f3f4f6;
+}
+.section-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 .section-title {
   font-size: 13px;
-  color: #374151;
+  color: #1f2937;
+  font-weight: 500;
+  word-break: break-all;
+}
+.page-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.page-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.page-num {
+  width: 60px;
+  padding: 2px 6px;
+  border: 1px solid #bfdbfe;
+  border-radius: 3px;
+  font-size: 11px;
+  outline: none;
+  background: #eff6ff;
+}
+.page-num:focus {
+  border-color: #3b82f6;
+}
+.page-tilde {
+  color: #6b7280;
+  font-size: 11px;
+}
+.section-page {
+  font-size: 11px;
+  color: #6b7280;
+}
+.section-unbound {
+  font-size: 11px;
+  color: #9ca3af;
+}
+.section-bound {
+  font-size: 12px;
+  color: #059669;
+  cursor: pointer;
+}
+.section-bound:hover {
+  text-decoration: underline;
+}
+.bound-note-title {
+  font-weight: 500;
+}
+.section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex-shrink: 0;
+  justify-content: flex-end;
 }
 .edit-area {
   padding: 10px 14px;
@@ -360,5 +975,90 @@ defineExpose({ loadDocuments })
 }
 .btn-link:hover {
   text-decoration: underline;
+}
+
+/* Dialog */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+.dialog {
+  background: #fff;
+  border-radius: 8px;
+  width: 420px;
+  max-width: 90%;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+}
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+}
+.dialog-body {
+  padding: 18px;
+}
+.dialog-footer {
+  padding: 12px 18px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form-label {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 500;
+}
+.form-hint {
+  font-size: 12px;
+  color: #9ca3af;
+}
+.form-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #374151;
+  outline: none;
+  box-sizing: border-box;
+  background: #fff;
+}
+.form-input:focus {
+  border-color: #3b82f6;
+}
+.add-chapter-bar {
+  padding: 10px 14px;
+  border-top: 1px dashed #e5e7eb;
+}
+.empty-chapters {
+  padding: 20px 14px;
+  text-align: center;
+}
+.empty-chapters p {
+  font-size: 14px;
+  color: #6b7280;
+  margin-bottom: 12px;
+}
+.empty-hint {
+  font-size: 12px !important;
+  color: #9ca3af !important;
+  line-height: 1.6;
+  margin-top: 14px !important;
 }
 </style>

@@ -17,17 +17,81 @@
       </div>
     </div>
     <div class="mindmap-canvas" ref="canvasRef"></div>
+
+    <!-- 选中节点悬浮工具栏 -->
+    <div
+      v-if="selectedNode && !refDialogVisible"
+      class="node-float-toolbar"
+      :style="floatToolbarStyle"
+    >
+      <button class="ft-btn" title="关联PDF" @click="openRefDialog">🔖</button>
+    </div>
+
+    <!-- 关联对话框 -->
+    <div v-if="refDialogVisible" class="dialog-overlay" @click.self="refDialogVisible = false">
+      <div class="dialog">
+        <div class="dialog-header">
+          <span>🔖 关联知识点 - {{ refForm.nodeTitle }}</span>
+          <button class="close-btn" @click="refDialogVisible = false">✕</button>
+        </div>
+        <div class="dialog-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">起始页</label>
+              <input
+                v-model.number="refForm.pageStart"
+                type="number"
+                min="1"
+                class="form-input"
+                placeholder="页码"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">结束页</label>
+              <input
+                v-model.number="refForm.pageEnd"
+                type="number"
+                min="1"
+                class="form-input"
+                placeholder="可选，不填则同起始页"
+              />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">原文摘录</label>
+            <textarea
+              v-model="refForm.excerpt"
+              rows="4"
+              class="form-input"
+              placeholder="可粘贴原文内容..."
+            ></textarea>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button class="btn-small" @click="refDialogVisible = false">❌取消</button>
+          <button
+            v-if="currentRefId"
+            class="btn-small danger"
+            @click="onDeleteRef"
+          >🗑️删除关联</button>
+          <button class="btn-small btn-primary" @click="onSaveRef">✅保存</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch, nextTick, inject } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick, inject, computed } from 'vue'
 import MindMap from 'simple-mind-map'
+import { savePdfRef, deletePdfRef } from '../api/noteApi'
 
 const props = defineProps({
-  content: { type: String, default: '' }
+  content: { type: String, default: '' },
+  noteId: { type: [Number, String], default: null },
+  pdfRefs: { type: Array, default: () => [] }
 })
-const emit = defineEmits(['update:content', 'back'])
+const emit = defineEmits(['update:content', 'back', 'jumpPdfPage', 'openPdfRefDialog', 'refChanged'])
 
 const canvasRef = ref(null)
 let mindMap = null
@@ -35,7 +99,20 @@ let resizeObserver = null
 const toast = inject('showToast', () => {})
 let isInternalUpdate = false
 
-// 解析 Markdown 标题为树结构
+const selectedNode = ref(null)
+const floatToolbarStyle = ref({ display: 'none' })
+
+const refDialogVisible = ref(false)
+const refForm = ref({
+  nodeUid: '',
+  nodeTitle: '',
+  pageStart: 1,
+  pageEnd: null,
+  excerpt: ''
+})
+const currentRefId = ref(null)
+const addedBadgeUids = ref(new Set())
+
 const parseMdToTree = (mdText) => {
   if (!mdText || !mdText.trim()) {
     return {
@@ -69,11 +146,9 @@ const parseMdToTree = (mdText) => {
   return root
 }
 
-// 树结构还原为 Markdown
 const treeToMarkdown = (node, level = 0) => {
   if (!node) return ''
   let result = ''
-  // 根节点不输出
   if (level > 0) {
     const prefix = '#'.repeat(Math.min(level, 6))
     result += `${prefix} ${node.data.text}\n`
@@ -86,7 +161,6 @@ const treeToMarkdown = (node, level = 0) => {
   return result
 }
 
-// 同步导图变更到 Markdown
 let syncTimer = null
 const syncToMarkdown = () => {
   if (!mindMap) return
@@ -99,6 +173,37 @@ const syncToMarkdown = () => {
       emit('update:content', md)
     } catch { /* skip */ }
   }, 500)
+}
+
+const updateFloatToolbar = () => {
+  if (!selectedNode.value || !mindMap) {
+    floatToolbarStyle.value = { display: 'none' }
+    return
+  }
+  try {
+    const nodeView = selectedNode.value._nodeView
+    if (!nodeView) {
+      floatToolbarStyle.value = { display: 'none' }
+      return
+    }
+    const rect = nodeView.getBoundingClientRect
+      ? nodeView.getBoundingClientRect()
+      : (nodeView.getBoundingClientRect ? nodeView.getBoundingClientRect() : null)
+    const canvasRect = canvasRef.value.getBoundingClientRect()
+    if (rect) {
+      const top = rect.top - canvasRect.top + 2
+      const left = rect.right - canvasRect.left + 4
+      floatToolbarStyle.value = {
+        top: top + 'px',
+        left: left + 'px',
+        display: 'flex'
+      }
+    } else {
+      floatToolbarStyle.value = { display: 'none' }
+    }
+  } catch {
+    floatToolbarStyle.value = { display: 'none' }
+  }
 }
 
 const initMindMap = () => {
@@ -122,21 +227,52 @@ const initMindMap = () => {
     alwaysShowExpandBtn: true
   })
 
-  // 结构变化同步
-  mindMap.on('data_change', () => syncToMarkdown())
+  mindMap.on('data_change', () => {
+    syncToMarkdown()
+    nextTick(() => {
+      clearBadges()
+      setTimeout(renderBadges, 100)
+    })
+  })
 
-  // 节点文字变化同步
-  mindMap.on('node_text_edit_change', () => syncToMarkdown())
+  mindMap.on('node_text_edit_change', () => {
+    syncToMarkdown()
+  })
+
+  mindMap.on('node_active', (nodeList) => {
+    if (nodeList && nodeList.length > 0) {
+      selectedNode.value = nodeList[0]
+    } else {
+      selectedNode.value = null
+    }
+    nextTick(() => {
+      updateFloatToolbar()
+    })
+  })
+
+  mindMap.on('node_inactive', () => {
+    selectedNode.value = null
+    floatToolbarStyle.value = { display: 'none' }
+  })
+
+  mindMap.on('expand', () => {
+    nextTick(() => setTimeout(renderBadges, 100))
+  })
+  mindMap.on('unexpand', () => {
+    nextTick(() => setTimeout(renderBadges, 100))
+  })
+
+  nextTick(() => setTimeout(renderBadges, 300))
 }
 
 const addChildNode = () => {
   if (!mindMap) return
-  // 无激活节点时自动激活根节点
   if (mindMap.renderer.activeNodeList.length === 0 && mindMap.renderer.root) {
     mindMap.renderer.addNodeToActiveList(mindMap.renderer.root)
   }
   mindMap.execCommand('INSERT_CHILD_NODE')
   syncToMarkdown()
+  nextTick(() => setTimeout(renderBadges, 100))
 }
 
 const deleteNode = () => {
@@ -147,20 +283,228 @@ const deleteNode = () => {
   }
   mindMap.execCommand('REMOVE_NODE')
   syncToMarkdown()
+  nextTick(() => setTimeout(renderBadges, 100))
 }
 
-const fitCanvas = () => mindMap && mindMap.view.fit()
-const zoomIn = () => mindMap && mindMap.view.enlarge()
-const zoomOut = () => mindMap && mindMap.view.narrow()
-const expandAllNodes = () => mindMap && mindMap.execCommand('EXPAND_ALL')
-const collapseAllNodes = () => mindMap && mindMap.execCommand('UNEXPAND_ALL')
+const fitCanvas = () => {
+  if (mindMap) mindMap.view.fit()
+  nextTick(() => setTimeout(renderBadges, 200))
+}
+const zoomIn = () => {
+  if (mindMap) mindMap.view.enlarge()
+  nextTick(() => setTimeout(renderBadges, 100))
+}
+const zoomOut = () => {
+  if (mindMap) mindMap.view.narrow()
+  nextTick(() => setTimeout(renderBadges, 100))
+}
+const expandAllNodes = () => {
+  if (mindMap) mindMap.execCommand('EXPAND_ALL')
+  nextTick(() => setTimeout(renderBadges, 200))
+}
+const collapseAllNodes = () => {
+  if (mindMap) mindMap.execCommand('UNEXPAND_ALL')
+  nextTick(() => setTimeout(renderBadges, 200))
+}
+
 const emitBack = () => {
   syncToMarkdown()
   emit('back')
 }
 
+const clearBadges = () => {
+  if (!canvasRef.value) return
+  const badges = canvasRef.value.querySelectorAll('.pdf-ref-badge')
+  badges.forEach(b => b.remove())
+  addedBadgeUids.value.clear()
+}
+
+const findNodeElByUid = (uid) => {
+  if (!canvasRef.value) return null
+  const all = canvasRef.value.querySelectorAll('*')
+  for (const el of all) {
+    if (el.dataset && el.dataset.uid === uid) return el
+    if (el.getAttribute && el.getAttribute('data-uid') === uid) return el
+  }
+  return null
+}
+
+const findNodeElByText = (text, usedTexts) => {
+  if (!canvasRef.value || !text) return null
+  const walker = document.createTreeWalker(
+    canvasRef.value,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        if (node.nodeValue && node.nodeValue.trim() === text.trim()) {
+          const key = `${text}_${node.parentNode}`
+          if (!usedTexts.has(key)) {
+            usedTexts.add(key)
+            return NodeFilter.FILTER_ACCEPT
+          }
+        }
+        return NodeFilter.FILTER_REJECT
+      }
+    }
+  )
+  const n = walker.nextNode()
+  return n ? n.parentElement : null
+}
+
+const renderBadges = () => {
+  if (!canvasRef.value || !props.pdfRefs || props.pdfRefs.length === 0) return
+  const usedTexts = new Set()
+  const usedUids = new Set()
+  const uidToRef = {}
+  props.pdfRefs.forEach(ref => {
+    if (ref.nodeUid) uidToRef[ref.nodeUid] = ref
+  })
+
+  props.pdfRefs.forEach(ref => {
+    let targetEl = null
+    if (ref.nodeUid && !usedUids.has(ref.nodeUid)) {
+      targetEl = findNodeElByUid(ref.nodeUid)
+      if (targetEl) {
+        usedUids.add(ref.nodeUid)
+        const badgeKey = `badge_${ref.nodeUid}`
+        if (addedBadgeUids.value.has(badgeKey)) return
+        addedBadgeUids.value.add(badgeKey)
+      }
+    }
+    if (!targetEl) {
+      targetEl = findNodeElByText(ref.nodeTitle, usedTexts)
+    }
+    if (!targetEl) return
+
+    const badge = document.createElement('span')
+    badge.className = 'pdf-ref-badge'
+    badge.textContent = '📖'
+    badge.title = `P.${ref.pageStart || '?'} - ${ref.nodeTitle || ''}`
+    badge.dataset.refId = ref.id
+    badge.dataset.pageStart = ref.pageStart || 1
+    badge.style.cssText = `
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      background: #fef3c7;
+      border: 1px solid #fbbf24;
+      color: #92400e;
+      font-size: 12px;
+      padding: 0 4px;
+      border-radius: 10px;
+      cursor: pointer;
+      z-index: 20;
+      line-height: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      user-select: none;
+    `
+    targetEl.style.position = targetEl.style.position || 'relative'
+    targetEl.appendChild(badge)
+
+    badge.addEventListener('click', (e) => {
+      e.stopPropagation()
+      emit('jumpPdfPage', {
+        pageStart: Number(badge.dataset.pageStart) || 1,
+        ref
+      })
+    })
+  })
+}
+
+const openRefDialog = () => {
+  if (!selectedNode.value) {
+    toast('请先选中一个节点', 'info')
+    return
+  }
+  const node = selectedNode.value
+  const nodeUid = node.data && node.data.uid ? node.data.uid : ''
+  const nodeTitle = node.data && node.data.text ? node.data.text : ''
+
+  let existingRef = null
+  if (nodeUid && props.pdfRefs) {
+    existingRef = props.pdfRefs.find(r => r.nodeUid === nodeUid)
+  }
+  if (!existingRef && nodeTitle && props.pdfRefs) {
+    existingRef = props.pdfRefs.find(r => r.nodeTitle === nodeTitle)
+  }
+
+  if (existingRef) {
+    refForm.value = {
+      nodeUid,
+      nodeTitle,
+      pageStart: existingRef.pageStart || 1,
+      pageEnd: existingRef.pageEnd || null,
+      excerpt: existingRef.excerpt || ''
+    }
+    currentRefId.value = existingRef.id
+  } else {
+    refForm.value = {
+      nodeUid,
+      nodeTitle,
+      pageStart: 1,
+      pageEnd: null,
+      excerpt: ''
+    }
+    currentRefId.value = null
+  }
+
+  refDialogVisible.value = true
+}
+
+const onSaveRef = async () => {
+  if (!props.noteId) {
+    toast('请先保存笔记', 'error')
+    return
+  }
+  if (!refForm.value.nodeTitle) {
+    toast('缺少节点信息', 'error')
+    return
+  }
+  if (!refForm.value.pageStart || refForm.value.pageStart < 1) {
+    toast('请输入有效起始页码', 'error')
+    return
+  }
+  try {
+    const data = {
+      id: currentRefId.value || undefined,
+      noteId: props.noteId,
+      nodeUid: refForm.value.nodeUid,
+      nodeTitle: refForm.value.nodeTitle,
+      pageStart: refForm.value.pageStart,
+      pageEnd: refForm.value.pageEnd || null,
+      excerpt: refForm.value.excerpt || ''
+    }
+    await savePdfRef(data)
+    toast('保存成功', 'success')
+    refDialogVisible.value = false
+    emit('refChanged')
+  } catch (e) { /* handled */ }
+}
+
+const onDeleteRef = async () => {
+  if (!currentRefId.value) return
+  if (!confirm('确定要删除此关联吗？')) return
+  try {
+    await deletePdfRef(currentRefId.value)
+    toast('已删除', 'success')
+    refDialogVisible.value = false
+    currentRefId.value = null
+    emit('refChanged')
+  } catch (e) { /* handled */ }
+}
+
+const centerNodeByUid = (uid) => {
+  if (!mindMap || !uid) return
+  try {
+    const nodes = mindMap.renderer.nodeList || []
+    const target = nodes.find(n => n.data && n.data.uid === uid)
+    if (target && mindMap.view && mindMap.view.centerNode) {
+      mindMap.view.centerNode(target)
+    }
+  } catch { /* skip */ }
+}
+
 watch(() => props.content, (newVal, oldVal) => {
-  // 如果是内部更新触发的，跳过，避免无限循环
   if (isInternalUpdate) {
     isInternalUpdate = false
     return
@@ -170,18 +514,40 @@ watch(() => props.content, (newVal, oldVal) => {
   }
 })
 
+watch(() => props.pdfRefs, () => {
+  nextTick(() => {
+    clearBadges()
+    setTimeout(renderBadges, 100)
+  })
+}, { deep: true })
+
+let scrollHandler = null
+let resizeHandler = null
+
 onMounted(() => {
   nextTick(() => initMindMap())
 
   resizeObserver = new ResizeObserver(() => {
     if (mindMap) mindMap.view.fit()
+    nextTick(() => setTimeout(renderBadges, 200))
   })
   if (canvasRef.value) {
     resizeObserver.observe(canvasRef.value)
   }
+
+  scrollHandler = () => updateFloatToolbar()
+  resizeHandler = () => {
+    updateFloatToolbar()
+    nextTick(() => setTimeout(renderBadges, 150))
+  }
+  window.addEventListener('scroll', scrollHandler, true)
+  window.addEventListener('resize', resizeHandler)
 })
 
 onBeforeUnmount(() => {
+  if (scrollHandler) window.removeEventListener('scroll', scrollHandler, true)
+  if (resizeHandler) window.removeEventListener('resize', resizeHandler)
+  clearBadges()
   if (mindMap) {
     mindMap.destroy()
     mindMap = null
@@ -190,6 +556,8 @@ onBeforeUnmount(() => {
     resizeObserver.disconnect()
   }
 })
+
+defineExpose({ centerNodeByUid, renderBadges })
 </script>
 
 <style scoped>
@@ -199,6 +567,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   background: #f8f9fc;
+  position: relative;
 }
 .mindmap-toolbar {
   display: flex;
@@ -247,5 +616,148 @@ onBeforeUnmount(() => {
 .mindmap-canvas {
   flex: 1;
   overflow: hidden;
+  position: relative;
+}
+.node-float-toolbar {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 2px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  z-index: 50;
+}
+.ft-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: #fef3c7;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ft-btn:hover {
+  background: #fde68a;
+}
+
+/* Dialog */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+.dialog {
+  background: #fff;
+  border-radius: 8px;
+  width: 480px;
+  max-width: 92%;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+}
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+}
+.dialog-body {
+  padding: 18px;
+}
+.dialog-footer {
+  padding: 12px 18px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.form-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+.form-label {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 500;
+}
+.form-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #374151;
+  outline: none;
+  box-sizing: border-box;
+  background: #fff;
+  font-family: inherit;
+}
+.form-input:focus {
+  border-color: #3b82f6;
+}
+textarea.form-input {
+  resize: vertical;
+  min-height: 80px;
+  font-family: "Consolas", "Monaco", monospace;
+}
+.btn-small {
+  padding: 5px 12px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #374151;
+  white-space: nowrap;
+}
+.btn-small:hover {
+  background: #f3f4f6;
+}
+.btn-small.danger {
+  color: #ef4444;
+  border-color: #fecaca;
+}
+.btn-small.danger:hover {
+  background: #fef2f2;
+}
+.btn-small.btn-primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+.btn-small.btn-primary:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.close-btn {
+  border: none;
+  background: none;
+  font-size: 16px;
+  cursor: pointer;
+  color: #9ca3af;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.close-btn:hover {
+  color: #374151;
+  background: #f3f4f6;
 }
 </style>

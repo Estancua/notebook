@@ -12,8 +12,13 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: 50MB
-      max-request-size: 50MB
+      max-file-size: 1024MB
+      max-request-size: 1024MB
+      file-size-threshold: 100MB
+
+  # Tomcat 连接器配置（防止大文件上传连接中断）
+  tomcat:
+    max-swallow-size: -1
 
   # MySQL 数据源配置
   datasource:
@@ -66,7 +71,7 @@ llm:
 file:
   upload:
     path: ./uploads
-    max-size: 50MB
+    max-size: 1024MB
 
 # ============================
 # Embedding 嵌入模型配置（V0.2 启用）
