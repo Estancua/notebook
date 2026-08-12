@@ -12,7 +12,19 @@
       </div>
       <!-- 工具栏 -->
       <div class="editor-toolbar">
-        <template v-if="mode !== 'mindmap'">
+        <template v-if="mode === 'mindmap'">
+        <button class="tool-btn" @click="callMindmap('addChildNode')" title="添加子节点">＋</button>
+        <button class="tool-btn" @click="callMindmap('deleteNode')" title="删除选中节点">✕</button>
+        <span class="toolbar-sep"></span>
+        <button class="tool-btn" @click="callMindmap('expandAllNodes')" title="展开全部">⊞◢</button>
+        <button class="tool-btn" @click="callMindmap('collapseAllNodes')" title="收缩全部">⊞◣</button>
+        <span class="toolbar-sep"></span>
+        <button class="tool-btn" @click="callMindmap('fitCanvas')" title="适应画布">⊞</button>
+        <button class="tool-btn" @click="callMindmap('zoomIn')" title="放大">🔍+</button>
+        <button class="tool-btn" @click="callMindmap('zoomOut')" title="缩小">🔍−</button>
+        <span class="toolbar-sep"></span>
+        </template>
+        <template v-else>
         <button class="tool-btn" title="加粗 (Ctrl+B)" @click="wrapText('**')">B</button>
         <button class="tool-btn" title="斜体 (Ctrl+I)" @click="wrapText('*')"><em>I</em></button>
         <button class="tool-btn" title="标题1" @click="insertLine('# ')">H1</button>
@@ -279,7 +291,10 @@ const EditorContentArea = defineComponent({
         ]) : null,
 
         // Mindmap pane
-        showMindmapPane ? h('div', { class: 'mindmap-pane' }, [
+        showMindmapPane ? h('div', {
+          class: 'mindmap-pane',
+          style: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }
+        }, [
           h(MindMapViewer, {
             ref: (r) => { mindMapViewerRef.value = r },
             content: props.mindmapContent,
@@ -628,13 +643,24 @@ const handleOcrCreateNode = async (payload) => {
   toast(`已添加节点: ${text.substring(0, 20)}`, 'success')
 }
 
+// 调用导图方法
+const getMindmapRef = () => {
+  return mindMapViewerRef.value?.mindMapViewerRef?.value
+}
+const callMindmap = (method) => {
+  const mm = getMindmapRef()
+  if (mm && typeof mm[method] === 'function') {
+    mm[method]()
+  }
+}
+
 // 知识点导航抽屉
 const onNavItemClick = (ref) => {
   if (showPdfPanel.value && bindInfo.value) {
     jumpToPage(ref.pageStart)
   }
-  if (mode.value === 'mindmap' && mindMapViewerRef.value && mindMapViewerRef.value.mindMapViewerRef) {
-    const mm = mindMapViewerRef.value.mindMapViewerRef.value
+  if (mode.value === 'mindmap') {
+    const mm = getMindmapRef()
     if (mm && mm.centerNodeByUid && ref.nodeUid) {
       mm.centerNodeByUid(ref.nodeUid)
     }
@@ -699,17 +725,18 @@ defineExpose({ loadNote, save })
 <style scoped>
 .note-editor-outer {
   display: flex;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  height: 100%;
   position: relative;
   overflow: hidden;
 }
 .note-editor {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  background: #fff;
   flex: 1;
+  min-height: 0;
+  background: #fff;
   min-width: 0;
   overflow: hidden;
 }
@@ -855,6 +882,7 @@ defineExpose({ loadNote, save })
   display: flex;
   overflow: hidden;
   position: relative;
+  min-height: 0;
 }
 .editor-content.split .edit-pane,
 .editor-content.split .preview-pane {
@@ -929,13 +957,15 @@ defineExpose({ loadNote, save })
   flex: 1;
   display: flex;
   width: 100%;
-  height: 100%;
+  min-height: 0;
 }
 .editor-content.mindmap {
   flex: 1;
+  min-height: 0;
 }
 .editor-content.mindmap .mindmap-pane {
   flex: 1;
+  min-height: 0;
 }
 .editor-content.mindmap .edit-pane,
 .editor-content.mindmap .preview-pane {

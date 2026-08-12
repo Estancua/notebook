@@ -1,21 +1,5 @@
 <template>
   <div class="mindmap-editor">
-    <div class="mindmap-toolbar">
-      <span class="toolbar-title">🧠 思维导图</span>
-      <div class="toolbar-actions">
-        <button class="tool-btn" @click="addChildNode" title="添加子节点">＋</button>
-        <button class="tool-btn" @click="deleteNode" title="删除选中节点">✕</button>
-        <span class="toolbar-sep"></span>
-        <button class="tool-btn" @click="expandAllNodes" title="展开全部">⊞◢</button>
-        <button class="tool-btn" @click="collapseAllNodes" title="收缩全部">⊞◣</button>
-        <span class="toolbar-sep"></span>
-        <button class="tool-btn" @click="fitCanvas" title="适应画布">⊞</button>
-        <button class="tool-btn" @click="zoomIn" title="放大">🔍+</button>
-        <button class="tool-btn" @click="zoomOut" title="缩小">🔍−</button>
-        <span class="toolbar-sep"></span>
-        <button class="tool-btn" @click="emitBack" title="返回编辑">⬅</button>
-      </div>
-    </div>
     <div class="mindmap-canvas" ref="canvasRef" @dragover.prevent @drop="onDrop"></div>
 
     <!-- 选中节点悬浮工具栏 -->
@@ -165,14 +149,21 @@ let syncTimer = null
 const syncToMarkdown = () => {
   if (!mindMap) return
   clearTimeout(syncTimer)
-  syncTimer = setTimeout(() => {
-    try {
-      const data = mindMap.getData()
-      const md = treeToMarkdown(data, 0)
-      isInternalUpdate = true
-      emit('update:content', md)
-    } catch { /* skip */ }
-  }, 500)
+  syncTimer = setTimeout(() => doSync(), 500)
+}
+// 立即同步（拖入节点时使用，避免切换模式时丢失）
+const syncImmediate = () => {
+  if (!mindMap) return
+  clearTimeout(syncTimer)
+  doSync()
+}
+const doSync = () => {
+  try {
+    const data = mindMap.getData()
+    const md = treeToMarkdown(data, 0)
+    isInternalUpdate = true
+    emit('update:content', md)
+  } catch { /* skip */ }
 }
 
 const updateFloatToolbar = () => {
@@ -262,7 +253,25 @@ const initMindMap = () => {
     nextTick(() => setTimeout(renderBadges, 100))
   })
 
-  nextTick(() => setTimeout(renderBadges, 300))
+  // 拖拽重组由 simple-mind-map 内置 Drag 插件自动处理
+  // - 拖到其他节点上 → MOVE_NODE_TO 成为其子节点
+  // - 拖到兄弟节点间 → INSERT_AFTER/INSERT_BEFORE 重排序
+  mindMap.on('node_dragend', ({ overlapNodeUid }) => {
+    // 无重叠且 enableFreeDrag=false 时，节点不动
+    // 如果需要"拖到空白→移到根节点"，可在此处理
+    if (!overlapNodeUid) {
+      // 预留：可在此将节点移到根下作为独立主题
+    }
+    syncToMarkdown()
+    nextTick(() => setTimeout(renderBadges, 200))
+  })
+
+  nextTick(() => {
+    setTimeout(() => {
+      renderBadges()
+      if (mindMap) mindMap.view.fit()
+    }, 300)
+  })
 }
 
 const addChildNode = () => {
@@ -510,7 +519,13 @@ watch(() => props.content, (newVal, oldVal) => {
     return
   }
   if (newVal !== oldVal) {
-    nextTick(() => initMindMap())
+    nextTick(() => {
+      requestAnimationFrame(() => {
+        if (canvasRef.value && canvasRef.value.offsetWidth > 0) {
+          initMindMap()
+        }
+      })
+    })
   }
 })
 
@@ -525,7 +540,24 @@ let scrollHandler = null
 let resizeHandler = null
 
 onMounted(() => {
-  nextTick(() => initMindMap())
+  // 等待浏览器完成布局后再初始化导图，避免容器宽高为 0
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      if (canvasRef.value && canvasRef.value.offsetWidth > 0 && canvasRef.value.offsetHeight > 0) {
+        initMindMap()
+      } else {
+        // 容器尺寸仍为0，通过 ResizeObserver 延迟初始化
+        const ro = new ResizeObserver((entries) => {
+          const entry = entries[0]
+          if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+            ro.disconnect()
+            initMindMap()
+          }
+        })
+        ro.observe(canvasRef.value)
+      }
+    })
+  })
 
   resizeObserver = new ResizeObserver(() => {
     if (mindMap) mindMap.view.fit()
@@ -557,29 +589,35 @@ onBeforeUnmount(() => {
   }
 })
 
-// 拖放创建节点
+// 拖放创建节点（OCR 文字 → 根节点下创建独立主分支）
 const insertDragNode = (text, dragMeta) => {
   if (!mindMap) return
-  if (mindMap.renderer.activeNodeList.length === 0 && mindMap.renderer.root) {
-    mindMap.renderer.addNodeToActiveList(mindMap.renderer.root)
-  }
+  const rootNode = mindMap.renderer.root
+  if (!rootNode) return
+  mindMap.renderer.addNodeToActiveList(rootNode)
   mindMap.execCommand('INSERT_CHILD_NODE')
-  // 获取新创建的节点并设置文字
   const activeNodes = mindMap.renderer.activeNodeList
   if (activeNodes && activeNodes.length > 0) {
     const newNode = activeNodes[0]
-    newNode.setData({ ...newNode.getData(), text, _dragMeta: dragMeta })
-    mindMap.render()
+    mindMap.execCommand('SET_NODE_TEXT', newNode, text)
+    if (dragMeta) {
+      mindMap.execCommand('SET_NODE_DATA', newNode, { _dragMeta: dragMeta })
+    }
+    // 将新节点移到视图中心，方便用户看到
+    nextTick(() => {
+      mindMap.view.moveNodeToCenter(newNode)
+    })
   }
-  syncToMarkdown()
+  // 立即同步，防止切换模式时 debounce 未触发导致内容丢失
+  syncImmediate()
   nextTick(() => setTimeout(renderBadges, 200))
 }
 
+// 接收 HTML5 拖放
 const onDrop = (e) => {
   const text = e.dataTransfer.getData('text/plain')
   if (!text || !mindMap) return
 
-  // 尝试读取 PDF 元信息（来自 PdfPreview 的拖拽）
   let dragMeta = null
   try {
     const raw = e.dataTransfer.getData('application/json')
@@ -589,61 +627,18 @@ const onDrop = (e) => {
   insertDragNode(text, dragMeta)
 }
 
-defineExpose({ centerNodeByUid, renderBadges, insertDragNode })
+defineExpose({ centerNodeByUid, renderBadges, insertDragNode, addChildNode, deleteNode, expandAllNodes, collapseAllNodes, fitCanvas, zoomIn, zoomOut })
 </script>
 
 <style scoped>
 .mindmap-editor {
   display: flex;
   flex-direction: column;
+  flex: 1;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   background: #f8f9fc;
   position: relative;
-}
-.mindmap-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
-  flex-shrink: 0;
-}
-.toolbar-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #374151;
-}
-.toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.tool-btn {
-  min-width: 28px;
-  height: 28px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6b7280;
-  transition: all 0.15s;
-  padding: 0 6px;
-}
-.tool-btn:hover {
-  background: #f3f4f6;
-  color: #1f2937;
-}
-.toolbar-sep {
-  width: 1px;
-  height: 20px;
-  background: #e5e7eb;
-  margin: 0 4px;
 }
 .mindmap-canvas {
   flex: 1;

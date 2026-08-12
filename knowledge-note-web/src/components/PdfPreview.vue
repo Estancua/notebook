@@ -43,14 +43,12 @@
             <!-- 已加载的页面 -->
             <template v-if="pageDataMap[p]">
               <div class="ocr-page-container"
-                :style="{ width: pageDataMap[p].imageWidth + 'px', maxWidth: '100%' }"
+                :style="{ aspectRatio: pageDataMap[p].imageWidth + '/' + pageDataMap[p].imageHeight }"
                 @mouseup="handleTextSelect"
                 @mousedown="clearSelection">
                 <img :src="'data:image/jpeg;base64,' + pageDataMap[p].imageBase64"
-                  :width="pageDataMap[p].imageWidth" :height="pageDataMap[p].imageHeight"
                   class="ocr-page-image" />
-                <div class="ocr-text-overlay"
-                  :style="{ width: pageDataMap[p].imageWidth + 'px', height: pageDataMap[p].imageHeight + 'px' }">
+                <div class="ocr-text-overlay">
                   <span v-for="(line, idx) in pageDataMap[p].textLines" :key="idx"
                     class="ocr-text-line"
                     :style="lineStyle(line)"
@@ -382,11 +380,11 @@ const createMindmapNode = () => {
 /* 滚动式 OCR 视图 */
 .ocr-scroll-viewer { overflow-y: auto; height: 100%; background: #525659; }
 .ocr-pages-stack { display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 12px; }
-.ocr-page-wrapper { margin: 0 auto; }
-.ocr-page-container { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
-.ocr-page-image { display: block; width: 100%; height: auto; user-select: none; }
+.ocr-page-wrapper { margin: 0 auto; width: 100%; }
+.ocr-page-container { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.15); width: 100%; max-width: 850px; }
+.ocr-page-image { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; }
 .ocr-text-overlay {
-  position: absolute; top: 0; left: 0;
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
   pointer-events: none;
   user-select: text; -webkit-user-select: text;
 }
@@ -399,7 +397,7 @@ const createMindmapNode = () => {
 .ocr-text-line::-moz-selection { color: #fff; background: rgba(59,130,246,0.7); }
 .ocr-text-line:hover { background: rgba(250, 204, 21, 0.25); color: transparent; }
 .ocr-page-placeholder {
-  width: 800px; max-width: 95vw; height: 1100px;
+  width: 100%; max-width: 850px; aspect-ratio: 0.77;
   display: flex; align-items: center; justify-content: center;
   background: #fff; color: #9ca3af; font-size: 14px;
   box-shadow: 0 2px 12px rgba(0,0,0,0.15);
