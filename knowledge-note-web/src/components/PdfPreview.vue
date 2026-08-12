@@ -43,11 +43,15 @@
             <!-- 已加载的页面 -->
             <template v-if="pageDataMap[p]">
               <div class="ocr-page-container"
-                :style="{ aspectRatio: pageDataMap[p].imageWidth + '/' + pageDataMap[p].imageHeight }"
+                :style="{ aspectRatio: (pageDims[p]?.width || 595) + '/' + (pageDims[p]?.height || 842) }"
                 @mouseup="handleTextSelect"
                 @mousedown="clearSelection">
-                <img :src="'data:image/jpeg;base64,' + pageDataMap[p].imageBase64"
-                  class="ocr-page-image" />
+                <canvas
+                  v-if="pageDims[p]"
+                  :ref="(el) => setCanvasRef(el, p)"
+                  class="ocr-page-canvas"
+                ></canvas>
+                <div v-else class="ocr-page-placeholder">加载中...</div>
                 <div class="ocr-text-overlay">
                   <span v-for="(line, idx) in pageDataMap[p].textLines" :key="idx"
                     class="ocr-text-line"
@@ -72,8 +76,33 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, reactive } from 'vue'
+import { ref, computed, watch, nextTick, reactive, onBeforeUnmount } from 'vue'
 import { getDocumentPreviewUrl, getPageOcrResult } from '../api/documentApi'
+
+// PDF.js 通过 CDN 加载（避免 Vite 模块兼容问题）
+let pdfjsLib = null
+const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+const WORKER_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+
+const ensurePdfjs = async () => {
+  if (pdfjsLib) return pdfjsLib
+  if (window.pdfjsLib) {
+    pdfjsLib = window.pdfjsLib
+    pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_CDN
+    return pdfjsLib
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = PDFJS_CDN
+    script.onload = () => {
+      pdfjsLib = window.pdfjsLib
+      pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_CDN
+      resolve(pdfjsLib)
+    }
+    script.onerror = reject
+    document.head.appendChild(script)
+  })
+}
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -91,12 +120,21 @@ const iframeKey = ref(0)
 const ocrMode = ref(false)
 const currentOcrPage = ref(props.page || 1)  // 当前 OCR 聚焦页
 
+// ===== PDF.js 状态 =====
+let pdfDoc = null
+const pdfLoading = ref(false)
+const canvasRefs = {}
+const renderedPages = reactive(new Set())
+
 // 每页 OCR 数据缓存 { pageNumber: OcrPageVO, ... }
 const pageDataMap = reactive({})
 // 每页错误信息
 const pageErrors = reactive({})
 // 正在加载中的页码
 const loadingPages = reactive(new Set())
+
+// PDF 页面原始尺寸缓存（用于 aspect-ratio）
+const pageDims = reactive({})
 
 const scrollViewerRef = ref(null)
 const selectedText = ref('')
@@ -146,6 +184,7 @@ watch(() => [props.documentId, props.visible], () => {
   Object.keys(pageDataMap).forEach(k => delete pageDataMap[k])
   Object.keys(pageErrors).forEach(k => delete pageErrors[k])
   loadingPages.clear()
+  unloadPdfDocument()
 }, { immediate: true })
 
 const jumpToPage = (p) => {
@@ -164,6 +203,86 @@ const jumpToPage = (p) => {
 const prevPage = () => { if (currentPage.value > 1) jumpToPage(currentPage.value - 1) }
 const nextPage = () => { jumpToPage((currentPage.value || 1) + 1) }
 
+// ===== PDF.js 加载与渲染 =====
+const loadPdfDocument = async () => {
+  if (pdfDoc || !props.documentId) return
+  pdfLoading.value = true
+  try {
+    await ensurePdfjs()
+    const url = getDocumentPreviewUrl(props.documentId)
+    const loadingTask = pdfjsLib.getDocument(url)
+    pdfDoc = await loadingTask.promise
+    // 预加载前几页的尺寸信息
+    const numPages = pdfDoc.numPages
+    for (let i = 1; i <= Math.min(numPages, 5); i++) {
+      const page = await pdfDoc.getPage(i)
+      const viewport = page.getViewport({ scale: 1.0 })
+      pageDims[i] = { width: viewport.width, height: viewport.height }
+    }
+  } catch (e) {
+    console.error('PDF.js 加载失败:', e)
+  } finally {
+    pdfLoading.value = false
+  }
+}
+
+const setCanvasRef = (el, pageNum) => {
+  if (el) canvasRefs[pageNum] = el
+}
+
+// PDF.js 渲染比例（1.5 = 108 DPI，清晰度好）
+const RENDER_SCALE = 1.5
+
+const renderPageToCanvas = async (pageNum) => {
+  if (!pdfDoc || renderedPages.has(pageNum)) return
+  renderedPages.add(pageNum)
+  try {
+    const page = await pdfDoc.getPage(pageNum)
+    // 获取页面尺寸（用于 aspect-ratio）
+    if (!pageDims[pageNum]) {
+      const baseViewport = page.getViewport({ scale: 1.0 })
+      pageDims[pageNum] = { width: baseViewport.width, height: baseViewport.height }
+    }
+    // 以 RENDER_SCALE 渲染到 canvas
+    const viewport = page.getViewport({ scale: RENDER_SCALE })
+    const canvas = canvasRefs[pageNum]
+    if (!canvas) { renderedPages.delete(pageNum); return }
+    canvas.width = viewport.width
+    canvas.height = viewport.height
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    const ctx = canvas.getContext('2d')
+    await page.render({ canvasContext: ctx, viewport }).promise
+  } catch (e) {
+    renderedPages.delete(pageNum)
+    console.error(`渲染第${pageNum}页失败:`, e)
+  }
+}
+
+function unloadPdfDocument() {
+  if (pdfDoc) {
+    pdfDoc.destroy()
+    pdfDoc = null
+  }
+  renderedPages.clear()
+  Object.keys(canvasRefs).forEach(k => delete canvasRefs[k])
+  Object.keys(pageDims).forEach(k => delete pageDims[k])
+}
+
+const ensurePageRendered = (pageNum) => {
+  if (pageDims[pageNum] != null) {
+    // 尺寸已知，触发渲染
+    nextTick(() => renderPageToCanvas(pageNum))
+  } else if (pdfDoc) {
+    // 尺寸未知，先获取尺寸再渲染
+    pdfDoc.getPage(pageNum).then(page => {
+      const vp = page.getViewport({ scale: 1.0 })
+      pageDims[pageNum] = { width: vp.width, height: vp.height }
+      nextTick(() => renderPageToCanvas(pageNum))
+    }).catch(() => {})
+  }
+}
+
 // ===== 滚动式 OCR =====
 const toggleOcrMode = async () => {
   if (ocrMode.value) {
@@ -178,6 +297,8 @@ const toggleOcrMode = async () => {
   Object.keys(pageDataMap).forEach(k => delete pageDataMap[k])
   Object.keys(pageErrors).forEach(k => delete pageErrors[k])
   loadingPages.clear()
+  // 加载 PDF.js 文档
+  await loadPdfDocument()
   // 加载当前页及附近页
   ensurePagesLoaded(currentPage.value)
 }
@@ -251,6 +372,10 @@ const loadPageOcr = async (pageNum) => {
     const res = await getPageOcrResult(props.documentId, pageNum)
     if (res && res.textLines) {
       pageDataMap[pageNum] = res
+      // OCR 数据加载成功后，触发 PDF.js 渲染
+      nextTick(() => {
+        ensurePageRendered(pageNum)
+      })
     } else {
       pageErrors[pageNum] = `第${pageNum}页: OCR 未返回数据`
     }
@@ -336,6 +461,10 @@ const createMindmapNode = () => {
   selectedText.value = ''
   selectedLineIndices.value = []
 }
+
+onBeforeUnmount(() => {
+  unloadPdfDocument()
+})
 </script>
 
 <style scoped>
@@ -382,7 +511,7 @@ const createMindmapNode = () => {
 .ocr-pages-stack { display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 12px; }
 .ocr-page-wrapper { margin: 0 auto; width: 100%; }
 .ocr-page-container { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.15); width: 100%; max-width: 850px; }
-.ocr-page-image { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; }
+.ocr-page-canvas { display: block; width: 100%; height: 100%; user-select: none; }
 .ocr-text-overlay {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
   pointer-events: none;
