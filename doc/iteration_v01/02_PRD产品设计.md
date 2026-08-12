@@ -874,4 +874,20 @@ Home.vue
 
 ---
 
-文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-11（章节独立绑定 + 知识点导航 + OCR选区拖拽导图）| 状态：进行中
+---
+
+## 13. Bug 修复记录
+
+### 13.1 导图节点无法拖拽 (2026-08-12)
+
+**问题**：导图节点选中后无法拖拽移动，也无法拖拽到其他节点上建立新关系。
+
+**根因**：`MindMapViewer.vue` 导入的是 `simple-mind-map` 核心库（`index.js`），该核心库不包含 Drag 插件。Drag 是独立插件（`src/plugins/Drag.js`），位于 `full.js` 完整版中。
+
+**修复**：将导入路径从 `import MindMap from 'simple-mind-map'` 改为 `import MindMap from 'simple-mind-map/full.js'`。
+
+**影响文件**：`knowledge-note-web/src/components/MindMapViewer.vue` 第 70 行。
+
+---
+
+文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-12（修复导图节点拖拽bug）| 状态：进行中
