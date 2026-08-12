@@ -67,7 +67,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick, inject, computed } from 'vue'
-import MindMap from 'simple-mind-map'
+import MindMap from 'simple-mind-map/full.js'
 import { savePdfRef, deletePdfRef } from '../api/noteApi'
 
 const props = defineProps({
@@ -210,7 +210,7 @@ const initMindMap = () => {
     data,
     layout: 'logicalStructure',
     theme: 'classic4',
-    enableFreeDrag: true,
+    enableFreeDrag: false,
     mousewheelAction: 'zoom',
     readonly: false,
     initRootNodePosition: ['center', 'center'],
