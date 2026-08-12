@@ -19,10 +19,13 @@
       </div>
     </div>
 
-    <!-- OCR选区浮动操作栏 -->
-    <div v-if="ocrMode && selectedText" class="ocr-float-bar">
-      <span class="float-selected">已选: "{{ selectedTextTruncated }}"</span>
-      <button class="float-btn" @click="createMindmapNode">+ 创建导图节点</button>
+    <!-- OCR选区浮动操作栏：可拖拽到导图 -->
+    <div v-if="ocrMode && selectedText" class="ocr-float-bar"
+      draggable="true"
+      @dragstart="onDragStart"
+      @dragend="onDragEnd">
+      <span class="float-selected">已选: "{{ selectedTextTruncated }}" <span class="drag-hint">↗ 拖到导图</span></span>
+      <button class="float-btn" @click="createMindmapNode" @mousedown.stop>+ 创建导图节点</button>
     </div>
 
     <!-- 内容区 -->
@@ -100,6 +103,7 @@ const loadingPages = reactive(new Set())
 const scrollViewerRef = ref(null)
 const selectedText = ref('')
 const selectedLineIndices = ref([])
+const isDragging = ref(false)
 
 // 可见页面范围（当前页 ± 3）
 const visiblePageRange = computed(() => {
@@ -300,7 +304,28 @@ const handleTextSelect = () => {
   })
 }
 
-// 创建导图节点
+// HTML5 拖拽：将选中文字传递到导图
+const onDragStart = (e) => {
+  if (!selectedText.value) return
+  isDragging.value = true
+  e.dataTransfer.effectAllowed = 'copy'
+  e.dataTransfer.setData('text/plain', selectedText.value)
+  // 附带元信息，供 MindMapViewer 创建 PDF 关联
+  const meta = JSON.stringify({
+    text: selectedText.value,
+    documentId: props.documentId,
+    page: currentOcrPage.value,
+    pageStart: currentOcrPage.value,
+    pageEnd: currentOcrPage.value
+  })
+  e.dataTransfer.setData('application/json', meta)
+}
+
+const onDragEnd = () => {
+  isDragging.value = false
+}
+
+// 创建导图节点（点击按钮方式）
 const createMindmapNode = () => {
   if (!selectedText.value) return
   emit('createMindmapNode', {
@@ -340,8 +365,11 @@ const createMindmapNode = () => {
   display: flex; align-items: center; gap: 10px;
   padding: 6px 14px; background: #7c3aed; color: #fff;
   font-size: 12px; flex-shrink: 0; z-index: 10;
+  cursor: grab; user-select: none;
 }
+.ocr-float-bar:active { cursor: grabbing; }
 .float-selected { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ede9fe; }
+.drag-hint { color: #c4b5fd; font-size: 11px; margin-left: 8px; opacity: 0.8; }
 .float-btn {
   padding: 3px 12px; border: 1px solid #ddd6fe; background: #fff;
   border-radius: 4px; cursor: pointer; font-size: 12px; color: #7c3aed; font-weight: 600; white-space: nowrap;
@@ -369,7 +397,7 @@ const createMindmapNode = () => {
 }
 .ocr-text-line::selection { color: #fff; background: rgba(59,130,246,0.7); }
 .ocr-text-line::-moz-selection { color: #fff; background: rgba(59,130,246,0.7); }
-.ocr-text-line:hover { background: rgba(59,130,246,0.12); color: rgba(0,0,0,0.6); }
+.ocr-text-line:hover { background: rgba(250, 204, 21, 0.25); color: transparent; }
 .ocr-page-placeholder {
   width: 800px; max-width: 95vw; height: 1100px;
   display: flex; align-items: center; justify-content: center;

@@ -110,6 +110,7 @@
             file-type="PDF"
             :page="pdfPage"
             @close="() => {}"
+            @create-mindmap-node="handleOcrCreateNode"
           />
         </div>
       </div>
@@ -602,6 +603,29 @@ const onJumpPdfPage = ({ pageStart }) => {
   if (pageStart >= 1) {
     pdfPage.value = pageStart
   }
+}
+
+// OCR 文字 → 添加到当前笔记（导图节点）
+const handleOcrCreateNode = async (payload) => {
+  const { text } = payload
+  if (!text || !props.noteId) return
+  // 追加为 Markdown 标题到笔记内容末尾
+  const heading = `\n\n## ${text.replace(/\n/g, ' ')}`
+  content.value = (content.value || '') + heading
+  markDirty()
+  // 保存 note_pdf_ref 关联
+  try {
+    await savePdfRef({
+      noteId: props.noteId,
+      nodeUid: 'h2_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      nodeTitle: text.length > 50 ? text.substring(0, 50) : text,
+      pageStart: payload.pageStart || payload.page,
+      pageEnd: payload.pageEnd || payload.pageStart || payload.page,
+      excerpt: text.length > 500 ? text.substring(0, 500) : text
+    })
+    refreshPdfRefs()
+  } catch (e) { /* 关联失败不影响主流程 */ }
+  toast(`已添加节点: ${text.substring(0, 20)}`, 'success')
 }
 
 // 知识点导航抽屉

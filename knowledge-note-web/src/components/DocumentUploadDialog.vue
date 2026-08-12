@@ -7,56 +7,34 @@
           <button class="dialog-close" @click="$emit('close')">✕</button>
         </div>
         <div class="dialog-body">
-          <!-- 上传前：显示表单 -->
-          <template v-if="!uploading">
-            <div class="form-group">
-              <label class="form-label">选择笔记本</label>
-              <select class="form-input" v-model="selectedNotebookId">
-                <option value="" disabled>请选择笔记本</option>
-                <option v-for="nb in flatNotebooks" :key="nb.id" :value="String(nb.id)">
-                  {{ '  '.repeat(nb._depth || 0) }}{{ nb.name }}
-                </option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">选择文件 (PDF/DOCX)</label>
-              <input
-                class="form-input"
-                type="file"
-                ref="fileInput"
-                accept=".pdf,.docx"
-                @change="onFileChange"
-              />
-            </div>
-            <div class="file-info" v-if="selectedFile">
-              已选择: {{ selectedFile.name }} ({{ formatSize(selectedFile.size) }})
-            </div>
-            <div class="upload-hint">
-              提示：文件上传后需在文档管理面板中手动创建章节结构
-            </div>
-          </template>
-          <!-- 上传中：显示进度 -->
-          <template v-else>
-            <div class="uploading-section">
-              <div class="uploading-file">{{ selectedFile?.name }}</div>
-              <div class="uploading-size">{{ formatSize(selectedFile?.size || 0) }}</div>
-              <div class="progress-bar-wrapper">
-                <div class="progress-bar">
-                  <div class="progress-fill" :style="{ width: uploadPercent + '%' }"></div>
-                </div>
-                <div class="progress-text">{{ uploadPercent }}%</div>
-              </div>
-              <div class="uploading-status">
-                <span v-if="uploadPercent < 100">正在上传文件...</span>
-                <span v-else>文件已上传，服务端处理中...</span>
-              </div>
-            </div>
-          </template>
+          <div class="form-group">
+            <label class="form-label">选择笔记本</label>
+            <select class="form-input" v-model="selectedNotebookId">
+              <option value="" disabled>请选择笔记本</option>
+              <option v-for="nb in flatNotebooks" :key="nb.id" :value="String(nb.id)">
+                {{ '  '.repeat(nb._depth || 0) }}{{ nb.name }}
+              </option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">选择文件 (PDF/DOCX)</label>
+            <input
+              class="form-input"
+              type="file"
+              ref="fileInput"
+              accept=".pdf,.docx"
+              @change="onFileChange"
+            />
+          </div>
+          <div class="file-info" v-if="selectedFile">
+            已选择: {{ selectedFile.name }} ({{ formatSize(selectedFile.size) }})
+          </div>
+          <div class="upload-progress" v-if="uploading">上传解析中，请稍候...</div>
         </div>
         <div class="dialog-footer">
-          <button class="btn-cancel" @click="$emit('close')" :disabled="uploading">取消</button>
+          <button class="btn-cancel" @click="$emit('close')">取消</button>
           <button class="btn-submit" :disabled="!canUpload || uploading" @click="doUpload">
-            {{ uploading ? '上传中...' : '上传' }}
+            {{ uploading ? '上传中...' : '上传并解析' }}
           </button>
         </div>
       </div>
@@ -70,8 +48,7 @@ import { getNotebookTree } from '../api/notebookApi'
 import { uploadDocument } from '../api/documentApi'
 
 const props = defineProps({
-  visible: { type: Boolean, default: false },
-  defaultNotebookId: { type: [Number, String], default: '' }
+  visible: { type: Boolean, default: false }
 })
 const emit = defineEmits(['close', 'uploaded'])
 const toast = inject('showToast', () => {})
@@ -80,7 +57,6 @@ const fileInput = ref(null)
 const selectedNotebookId = ref('')
 const selectedFile = ref(null)
 const uploading = ref(false)
-const uploadPercent = ref(0)
 const flatNotebooks = ref([])
 
 const flattenTree = (nodes, depth = 0) => {
@@ -96,10 +72,9 @@ const flattenTree = (nodes, depth = 0) => {
 
 watch(() => props.visible, async (v) => {
   if (v) {
-    selectedNotebookId.value = String(props.defaultNotebookId || '')
+    selectedNotebookId.value = ''
     selectedFile.value = null
     uploading.value = false
-    uploadPercent.value = 0
     try {
       const tree = await getNotebookTree()
       flatNotebooks.value = flattenTree(tree || [])
@@ -130,20 +105,12 @@ const formatSize = (bytes) => {
 const doUpload = async () => {
   if (!canUpload.value) return
   uploading.value = true
-  uploadPercent.value = 0
   try {
     const formData = new FormData()
     formData.append('file', selectedFile.value)
     formData.append('notebookId', selectedNotebookId.value)
-    const onProgress = (progressEvent) => {
-      if (progressEvent.total) {
-        const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-        uploadPercent.value = Math.min(pct, 100)
-      }
-    }
-    const data = await uploadDocument(formData, onProgress)
-    uploadPercent.value = 100
-    toast('文档上传成功，请在文档面板中手动添加章节', 'success')
+    const data = await uploadDocument(formData)
+    toast('文档上传成功，正在解析...', 'success')
     emit('uploaded', data)
     emit('close')
   } catch (e) { /* handled */ } finally {
@@ -233,58 +200,10 @@ select.form-input {
   background: #f9fafb;
   border-radius: 6px;
 }
-.upload-hint {
-  font-size: 12px;
-  color: #9ca3af;
-  padding: 8px 0 0;
-  line-height: 1.5;
-}
-/* 上传进度区域 */
-.uploading-section {
-  text-align: center;
-  padding: 20px 0;
-}
-.uploading-file {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1f2937;
-  margin-bottom: 4px;
-  word-break: break-all;
-}
-.uploading-size {
-  font-size: 12px;
-  color: #9ca3af;
-  margin-bottom: 20px;
-}
-.progress-bar-wrapper {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.progress-bar {
-  flex: 1;
-  height: 8px;
-  background: #e5e7eb;
-  border-radius: 4px;
-  overflow: hidden;
-}
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #3b82f6, #2563eb);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-.progress-text {
+.upload-progress {
   font-size: 13px;
-  font-weight: 600;
   color: #3b82f6;
-  min-width: 36px;
-  text-align: right;
-}
-.uploading-status {
-  font-size: 13px;
-  color: #6b7280;
+  padding: 10px 0;
 }
 .dialog-footer {
   display: flex;
