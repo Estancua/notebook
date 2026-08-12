@@ -888,6 +888,36 @@ Home.vue
 
 **影响文件**：`knowledge-note-web/src/components/MindMapViewer.vue` 第 70 行。
 
+### 13.2 视图切换导致内容 HTML 重复编码 (2026-08-12)
+
+**问题**：编辑/预览和导图模式之间来回切换，内容出现 `<p>&lt;p&gt;...` 嵌套 HTML 编码，且非标题段落内容丢失。
+
+**根因**：
+1. `parseMdToTree` 只提取 `#` 标题行，普通段落全部丢弃
+2. 导图初始化时的 `data_change` 事件触发 `syncToMarkdown` 将内容覆盖为空
+3. 卸载时未清理 debounce timer 导致残留同步
+
+**修复**：
+1. `parseMdToTree` 保留非标题行为段落节点（标记 `_isParagraph`）
+2. `treeToMarkdown` 对段落节点不加 `#` 前缀，直接输出文本
+3. 跳过首次 `data_change`，避免初始化覆盖原始 content
+4. `onBeforeUnmount` 中 `clearTimeout(syncTimer)`
+
+**影响文件**：`knowledge-note-web/src/components/MindMapViewer.vue`
+
+### 13.3 "编辑章节"按钮改为内联标题编辑 (2026-08-12)
+
+**问题**："编辑章节"按钮打开原始 JSON 编辑器修改 `doc.parseResult`，但 V0.2 已将章节拆为 `document_chapter` 表，应通过 `updateChapter` API 单独编辑。
+
+**修复**：
+1. 移除 JSON 编辑区（`startEdit`/`saveEdit`/`cancelEdit`/`editingDocId`/`editText`）
+2. 新增 `editingTitlesDocId` 状态和 `toggleEditTitles` 切换
+3. 按钮改为"编辑标题"/"完成编辑"（toggle）
+4. ChapterItem 在编辑模式下显示可编辑 input，回车保存/ESC取消，调用 `updateChapter(id, {title})`
+5. `editingTitles` prop 和 `title-saved` event 递归传递给子章节
+
+**影响文件**：`knowledge-note-web/src/components/DocumentPanel.vue`
+
 ---
 
-文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-12（修复导图节点拖拽bug）| 状态：进行中
+文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-12（修复视图切换内容编码 + 章节编辑改为内联标题）| 状态：进行中

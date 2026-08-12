@@ -62,6 +62,16 @@ export function updateChapter(chapterId, data) {
   return request.put(`/document/chapter/${chapterId}`, data)
 }
 
+// 手动创建章节
+export function createChapter(data) {
+  return request.post('/document/chapter', data)
+}
+
+// 删除章节（级联删除子章节）
+export function deleteChapter(chapterId) {
+  return request.delete(`/document/chapter/${chapterId}`)
+}
+
 // OCR 识别 PDF 指定页（返回纯文本）
 export function ocrPage(documentId, page) {
   return request.post(`/document/${documentId}/ocr-page`, null, { params: { page } })
