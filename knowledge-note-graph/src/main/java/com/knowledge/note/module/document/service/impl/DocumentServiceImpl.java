@@ -510,8 +510,8 @@ public class DocumentServiceImpl implements DocumentService {
                 throw new BusinessException(400, "页码超出范围: " + page + "，总页数: " + totalPages);
             }
             PDFRenderer renderer = new PDFRenderer(pdfDoc);
-            // 渲染为图片（2x DPI 保证清晰度）
-            BufferedImage image = renderer.renderImage(page - 1, 2.0f);
+            // 渲染为图片（1.2x DPI 兼顾清晰度和文件大小）
+            BufferedImage image = renderer.renderImage(page - 1, 1.2f);
             int pw = image.getWidth();
             int ph = image.getHeight();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();

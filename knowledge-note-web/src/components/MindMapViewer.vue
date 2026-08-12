@@ -16,7 +16,7 @@
         <button class="tool-btn" @click="emitBack" title="返回编辑">⬅</button>
       </div>
     </div>
-    <div class="mindmap-canvas" ref="canvasRef"></div>
+    <div class="mindmap-canvas" ref="canvasRef" @dragover.prevent @drop="onDrop"></div>
 
     <!-- 选中节点悬浮工具栏 -->
     <div
@@ -557,7 +557,39 @@ onBeforeUnmount(() => {
   }
 })
 
-defineExpose({ centerNodeByUid, renderBadges })
+// 拖放创建节点
+const insertDragNode = (text, dragMeta) => {
+  if (!mindMap) return
+  if (mindMap.renderer.activeNodeList.length === 0 && mindMap.renderer.root) {
+    mindMap.renderer.addNodeToActiveList(mindMap.renderer.root)
+  }
+  mindMap.execCommand('INSERT_CHILD_NODE')
+  // 获取新创建的节点并设置文字
+  const activeNodes = mindMap.renderer.activeNodeList
+  if (activeNodes && activeNodes.length > 0) {
+    const newNode = activeNodes[0]
+    newNode.setData({ ...newNode.getData(), text, _dragMeta: dragMeta })
+    mindMap.render()
+  }
+  syncToMarkdown()
+  nextTick(() => setTimeout(renderBadges, 200))
+}
+
+const onDrop = (e) => {
+  const text = e.dataTransfer.getData('text/plain')
+  if (!text || !mindMap) return
+
+  // 尝试读取 PDF 元信息（来自 PdfPreview 的拖拽）
+  let dragMeta = null
+  try {
+    const raw = e.dataTransfer.getData('application/json')
+    if (raw) dragMeta = JSON.parse(raw)
+  } catch { /* ignore */ }
+
+  insertDragNode(text, dragMeta)
+}
+
+defineExpose({ centerNodeByUid, renderBadges, insertDragNode })
 </script>
 
 <style scoped>

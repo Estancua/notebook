@@ -43,16 +43,6 @@
             <div v-else>
               <div v-if="chapterLoading[doc.id]" class="loading-state small">加载章节中...</div>
               <template v-else>
-                <div v-if="(chapterTrees[doc.id] || []).length === 0" class="empty-chapters">
-                  <p>暂无章节，请手动创建：</p>
-                  <button class="btn-small btn-primary" @click="openCreateChapterDialog({ documentId: doc.id, parentId: 0 })">
-                    + 添加第一个章节
-                  </button>
-                  <p class="empty-hint">
-                    提示：可对照 PDF 预览，逐章创建目录结构<br />
-                    创建后可绑定笔记、设置页码范围、一键生成思维导图
-                  </p>
-                </div>
                 <template v-for="chapter in chapterTrees[doc.id] || []" :key="chapter.id">
                   <ChapterItem
                     :chapter="chapter"
@@ -66,15 +56,8 @@
                     @open-note="openNote"
                     @update-chapter="onChapterUpdated"
                     @jump-page="onJumpPage"
-                    @delete-chapter="handleDeleteChapter"
-                    @add-child-chapter="openCreateChapterDialog"
                   />
                 </template>
-                <div v-if="(chapterTrees[doc.id] || []).length > 0" class="add-chapter-bar">
-                  <button class="btn-link" @click="openCreateChapterDialog({ documentId: doc.id, parentId: 0 })">
-                    + 添加顶层章节
-                  </button>
-                </div>
               </template>
               <button class="btn-link" @click="startEdit(doc)">编辑章节</button>
             </div>
@@ -109,33 +92,6 @@
         </div>
       </div>
     </div>
-
-    <!-- 创建章节对话框 -->
-    <div v-if="createChapterVisible" class="dialog-overlay" @click.self="createChapterVisible = false">
-      <div class="dialog">
-        <div class="dialog-header">
-          <span>添加章节</span>
-          <button class="close-btn" @click="createChapterVisible = false">✕</button>
-        </div>
-        <div class="dialog-body">
-          <div class="form-group">
-            <label class="form-label">章节标题</label>
-            <input v-model="createChapterTitle" class="form-input" placeholder="例如：第一章 绪论"
-              @keyup.enter="confirmCreateChapter" />
-          </div>
-          <div class="form-group" v-if="createChapterParentId !== 0">
-            <label class="form-label">父章节</label>
-            <span class="form-hint">将作为子章节添加</span>
-          </div>
-        </div>
-        <div class="dialog-footer">
-          <button class="btn-small" @click="createChapterVisible = false">取消</button>
-          <button class="btn-small btn-primary" @click="confirmCreateChapter" :disabled="!createChapterTitle.trim()">
-            确认添加
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -150,9 +106,7 @@ import {
   getChapterList,
   bindChapterNote,
   unbindChapterNote,
-  updateChapter,
-  createChapter,
-  deleteChapter
+  updateChapter
 } from '../api/documentApi'
 import { saveNote, listByNotebook } from '../api/noteApi'
 
@@ -164,7 +118,7 @@ const ChapterItem = {
     docNotebookId: { type: [Number, String], default: null },
     documentId: { type: [Number, String], required: true }
   },
-  emits: ['bind', 'create-bind', 'unbind', 'generate-mindmap', 'open-note', 'update-chapter', 'jump-page', 'delete-chapter', 'add-child-chapter'],
+  emits: ['bind', 'create-bind', 'unbind', 'generate-mindmap', 'open-note', 'update-chapter', 'jump-page'],
   setup(props, { emit }) {
     const toast = inject('showToast', () => {})
     const generating = ref(false)
@@ -339,19 +293,7 @@ const ChapterItem = {
             class: 'btn-xsmall',
             disabled: generating.value,
             onClick: handleGenerate
-          }, generating.value ? '生成中...' : '🧠脑图'),
-          h('button', {
-            class: 'btn-xsmall',
-            onClick: () => emit('add-child-chapter', { documentId: props.documentId, parentId: props.chapter.id })
-          }, '➕子章节'),
-          h('button', {
-            class: 'btn-xsmall danger',
-            onClick: () => {
-              if (confirm(`确定删除章节 "${props.chapter.title}" 及其子章节吗？`)) {
-                emit('delete-chapter', props.chapter)
-              }
-            }
-          }, '🗑️删除')
+          }, generating.value ? '生成中...' : '🧠脑图')
         ])
       ]),
       ...(props.chapter.children || []).map(child =>
@@ -366,9 +308,7 @@ const ChapterItem = {
           onGenerateMindmap: (d) => emit('generate-mindmap', d),
           onOpenNote: (id) => emit('open-note', id),
           onUpdateChapter: (d) => emit('update-chapter', d),
-          onJumpPage: (d) => emit('jump-page', d),
-          onDeleteChapter: (c) => emit('delete-chapter', c),
-          onAddChildChapter: (d) => emit('add-child-chapter', d)
+          onJumpPage: (d) => emit('jump-page', d)
         })
       )
     ])
@@ -395,12 +335,6 @@ const bindDialogChapter = ref(null)
 const bindDialogNotebookId = ref(null)
 const selectedBindNoteId = ref('')
 const availableNotes = ref([])
-
-// 创建章节对话框
-const createChapterVisible = ref(false)
-const createChapterDocumentId = ref(null)
-const createChapterParentId = ref(0)
-const createChapterTitle = ref('')
 
 const loadDocuments = async () => {
   if (!props.notebookId) return
@@ -649,47 +583,6 @@ const handleUnbind = async (chapter) => {
   try {
     await unbindChapterNote(chapter.id)
     toast('解绑成功', 'success')
-    const doc = documents.value.find(d => {
-      return chapterTrees.value[d.id] && treeContains(chapterTrees.value[d.id], chapter.id)
-    })
-    if (doc) {
-      chapterTrees.value[doc.id] = null
-      loadChapters(doc)
-    }
-  } catch (e) { /* handled */ }
-}
-
-const openCreateChapterDialog = ({ documentId, parentId }) => {
-  createChapterDocumentId.value = documentId
-  createChapterParentId.value = parentId
-  createChapterTitle.value = ''
-  createChapterVisible.value = true
-}
-
-const confirmCreateChapter = async () => {
-  const title = createChapterTitle.value.trim()
-  if (!title || !createChapterDocumentId.value) return
-  try {
-    await createChapter({
-      documentId: createChapterDocumentId.value,
-      parentId: createChapterParentId.value,
-      title: title
-    })
-    toast('章节添加成功', 'success')
-    createChapterVisible.value = false
-    const doc = documents.value.find(d => String(d.id) === String(createChapterDocumentId.value))
-    if (doc) {
-      chapterTrees.value[doc.id] = null
-      loadChapters(doc)
-    }
-  } catch (e) { /* handled */ }
-}
-
-const handleDeleteChapter = async (chapter) => {
-  if (!chapter) return
-  try {
-    await deleteChapter(chapter.id)
-    toast('章节已删除', 'success')
     const doc = documents.value.find(d => {
       return chapterTrees.value[d.id] && treeContains(chapterTrees.value[d.id], chapter.id)
     })
@@ -1024,10 +917,6 @@ defineExpose({ loadDocuments })
   color: #374151;
   font-weight: 500;
 }
-.form-hint {
-  font-size: 12px;
-  color: #9ca3af;
-}
 .form-input {
   width: 100%;
   padding: 8px 10px;
@@ -1041,24 +930,5 @@ defineExpose({ loadDocuments })
 }
 .form-input:focus {
   border-color: #3b82f6;
-}
-.add-chapter-bar {
-  padding: 10px 14px;
-  border-top: 1px dashed #e5e7eb;
-}
-.empty-chapters {
-  padding: 20px 14px;
-  text-align: center;
-}
-.empty-chapters p {
-  font-size: 14px;
-  color: #6b7280;
-  margin-bottom: 12px;
-}
-.empty-hint {
-  font-size: 12px !important;
-  color: #9ca3af !important;
-  line-height: 1.6;
-  margin-top: 14px !important;
 }
 </style>
