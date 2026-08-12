@@ -82,6 +82,7 @@ let mindMap = null
 let resizeObserver = null
 const toast = inject('showToast', () => {})
 let isInternalUpdate = false
+let isFirstDataChange = true
 
 const selectedNode = ref(null)
 const floatToolbarStyle = ref({ display: 'none' })
@@ -108,10 +109,37 @@ const parseMdToTree = (mdText) => {
   const lines = mdText.split('\n')
   const root = { data: { text: '笔记', uid: 'root' }, children: [] }
   const stack = [{ node: root, level: 0 }]
+  let pendingPara = []
+
+  const flushParagraph = () => {
+    if (pendingPara.length === 0) return
+    const text = pendingPara.join('\n').trim()
+    pendingPara = []
+    if (!text) return
+    const paraNode = {
+      data: {
+        text,
+        uid: `para_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        _isParagraph: true
+      },
+      children: []
+    }
+    stack[stack.length - 1].node.children.push(paraNode)
+  }
 
   for (const line of lines) {
     const match = line.match(/^(#{1,6})\s+(.+)/)
-    if (!match) continue
+    if (!match) {
+      // 空行作为段落分隔，非空行累积为段落文本
+      if (line.trim()) {
+        pendingPara.push(line.trim())
+      } else {
+        flushParagraph()
+      }
+      continue
+    }
+    // 遇到标题前先 flush 累积的段落
+    flushParagraph()
     const level = match[1].length
     const text = match[2].trim()
 
@@ -127,6 +155,9 @@ const parseMdToTree = (mdText) => {
     stack.push({ node: newNode, level })
   }
 
+  // 最后 flush 剩余段落
+  flushParagraph()
+
   return root
 }
 
@@ -134,12 +165,18 @@ const treeToMarkdown = (node, level = 0) => {
   if (!node) return ''
   let result = ''
   if (level > 0) {
-    const prefix = '#'.repeat(Math.min(level, 6))
-    result += `${prefix} ${node.data.text}\n`
+    if (node.data._isParagraph) {
+      // 段落节点直接输出文本，不加 # 前缀，前后加空行与标题分隔
+      result += `\n${node.data.text}\n`
+    } else {
+      const prefix = '#'.repeat(Math.min(level, 6))
+      result += `${prefix} ${node.data.text}\n`
+    }
   }
   if (node.children) {
     for (const child of node.children) {
-      result += treeToMarkdown(child, level + 1)
+      // 段落节点的子节点不增加层级（段落本身不是标题层级）
+      result += treeToMarkdown(child, node.data._isParagraph ? level : level + 1)
     }
   }
   return result
@@ -202,6 +239,7 @@ const initMindMap = () => {
     mindMap.destroy()
     mindMap = null
   }
+  isFirstDataChange = true
 
   const data = parseMdToTree(props.content)
 
@@ -219,6 +257,15 @@ const initMindMap = () => {
   })
 
   mindMap.on('data_change', () => {
+    // 跳过初始化时的首次 data_change，避免覆盖原始 content
+    if (isFirstDataChange) {
+      isFirstDataChange = false
+      nextTick(() => {
+        clearBadges()
+        setTimeout(renderBadges, 100)
+      })
+      return
+    }
     syncToMarkdown()
     nextTick(() => {
       clearBadges()
@@ -577,6 +624,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearTimeout(syncTimer)
   if (scrollHandler) window.removeEventListener('scroll', scrollHandler, true)
   if (resizeHandler) window.removeEventListener('resize', resizeHandler)
   clearBadges()
