@@ -113,7 +113,7 @@ const parseMdToTree = (mdText) => {
 
   const flushParagraph = () => {
     if (pendingPara.length === 0) return
-    const text = pendingPara.join('\n').trim()
+    const text = sanitizeNodeText(pendingPara.join('\n'))
     pendingPara = []
     if (!text) return
     const paraNode = {
@@ -141,7 +141,7 @@ const parseMdToTree = (mdText) => {
     // 遇到标题前先 flush 累积的段落
     flushParagraph()
     const level = match[1].length
-    const text = match[2].trim()
+    const text = sanitizeNodeText(match[2])
 
     const newNode = {
       data: { text, uid: `h${level}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` },
@@ -161,16 +161,36 @@ const parseMdToTree = (mdText) => {
   return root
 }
 
+// 清理节点文本：解码 HTML 实体 + 去除 HTML 标签，处理多重编码（如 <p>&lt;p&gt;…&lt;/p&gt;</p>）
+const sanitizeNodeText = (text) => {
+  if (!text) return ''
+  let t = String(text)
+  const decode = (s) => s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+  const strip = (s) => s.replace(/<\/?[^>]+(>|$)/g, '')
+  for (let i = 0; i < 5; i++) {
+    const prev = t
+    t = strip(decode(t)).trim()
+    if (t === prev) break
+  }
+  return t
+}
+
 const treeToMarkdown = (node, level = 0) => {
   if (!node) return ''
   let result = ''
   if (level > 0) {
     if (node.data._isParagraph) {
       // 段落节点直接输出文本，不加 # 前缀，前后加空行与标题分隔
-      result += `\n${node.data.text}\n`
+      result += `\n${sanitizeNodeText(node.data.text)}\n`
     } else {
       const prefix = '#'.repeat(Math.min(level, 6))
-      result += `${prefix} ${node.data.text}\n`
+      result += `${prefix} ${sanitizeNodeText(node.data.text)}\n`
     }
   }
   if (node.children) {
@@ -643,20 +663,13 @@ const insertDragNode = (text, dragMeta) => {
   const rootNode = mindMap.renderer.root
   if (!rootNode) return
   mindMap.renderer.addNodeToActiveList(rootNode)
-  mindMap.execCommand('INSERT_CHILD_NODE')
-  const activeNodes = mindMap.renderer.activeNodeList
-  if (activeNodes && activeNodes.length > 0) {
-    const newNode = activeNodes[0]
-    mindMap.execCommand('SET_NODE_TEXT', newNode, text)
-    if (dragMeta) {
-      mindMap.execCommand('SET_NODE_DATA', newNode, { _dragMeta: dragMeta })
-    }
-    // 将新节点移到视图中心，方便用户看到
-    nextTick(() => {
-      mindMap.view.moveNodeToCenter(newNode)
-    })
-  }
+  // 通过 appointData 直接指定新节点文字（openEdit=false）：
+  // 若用默认 openEdit=true 会进入编辑态，导致激活列表被清空，后续 SET_NODE_TEXT 找不到新节点、文字填不进去
+  const appointData = { text }
+  if (dragMeta) appointData._dragMeta = dragMeta
+  mindMap.execCommand('INSERT_CHILD_NODE', false, [], appointData)
   // 立即同步，防止切换模式时 debounce 未触发导致内容丢失
+  // 不再 moveNodeToCenter，保持用户当前的缩放和视图位置不变
   syncImmediate()
   nextTick(() => setTimeout(renderBadges, 200))
 }

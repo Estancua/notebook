@@ -17,13 +17,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpRange;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
@@ -72,9 +76,9 @@ public class DocumentController {
     }
 
     @GetMapping("/{id}/preview")
-    public ResponseEntity<Resource> preview(@PathVariable Long id) {
+    public ResponseEntity<?> preview(@PathVariable Long id, HttpServletRequest request) {
         try {
-            return doPreview(id);
+            return doPreview(id, request);
         } catch (BusinessException e) {
             // ⚠️ 预览接口是给 iframe 用的，绝对不能返回 JSON Result（否则浏览器会把 JSON 当文件下载）
             // 业务异常转换为 HTTP 404 + 纯文本说明，iframe 能直接展示文字，不会触发下载
@@ -88,7 +92,7 @@ public class DocumentController {
         }
     }
 
-    private ResponseEntity<Resource> doPreview(Long id) {
+    private ResponseEntity<?> doPreview(Long id, HttpServletRequest request) {
         DocumentSection doc = documentSectionMapper.selectById(id);
         if (doc == null) {
             throw new BusinessException(404, "文档不存在 id=" + id);
@@ -137,12 +141,43 @@ public class DocumentController {
                 id, fileName, fileSize, ext, mediaType, file.getAbsolutePath());
 
         Resource resource = new FileSystemResource(file);
+
+        // 支持 HTTP Range 请求（PDF.js rangeChunkSize 需要）
+        String rangeHeader = request.getHeader(HttpHeaders.RANGE);
+        if (rangeHeader != null && fileSize > 0) {
+            try {
+                List<HttpRange> ranges = HttpRange.parseRanges(rangeHeader);
+                if (!ranges.isEmpty()) {
+                    HttpRange range = ranges.get(0);
+                    long start = range.getRangeStart(fileSize);
+                    long end = range.getRangeEnd(fileSize);
+                    int length = (int) (end - start + 1);
+                    byte[] data = new byte[length];
+                    try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+                        raf.seek(start);
+                        raf.readFully(data);
+                    }
+                    log.debug("Range 请求: bytes={}-{}/{} for id={}", start, end, fileSize, id);
+                    return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT)
+                            .contentType(mediaType)
+                            .header(HttpHeaders.CONTENT_RANGE,
+                                    "bytes " + start + "-" + end + "/" + fileSize)
+                            .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                            .contentLength(length)
+                            .body(data);
+                }
+            } catch (Exception e) {
+                log.warn("Range 请求解析失败，降级为完整响应: {}", rangeHeader, e);
+            }
+        }
+
         return ResponseEntity.ok()
                 .contentType(mediaType)
                 .contentLength(fileSize)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "inline; filename=\"" + encodedFilename + "\"; filename*=UTF-8''" + encodedFilename)
                 .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
                 .body(resource);
     }
 
@@ -250,10 +285,21 @@ public class DocumentController {
         return Result.success(documentService.ocrPageWithPositions(id, page));
     }
 
-    /** 获取 PDF 单页 OCR 结果（带缓存，首次识别后自动缓存） */
+    /** 获取 PDF 单页 OCR 结果（带缓存，首次识别后自动缓存；force=true 跳过失败缓存重新识别） */
     @GetMapping("/{id}/ocr-page-result")
-    public Result<OcrPageVO> getPageOcrResult(@PathVariable Long id, @RequestParam int page) {
-        return Result.success(documentService.getPageOcrResult(id, page));
+    public Result<OcrPageVO> getPageOcrResult(@PathVariable Long id, @RequestParam int page,
+            @RequestParam(defaultValue = "false") boolean force) {
+        return Result.success(documentService.getPageOcrResult(id, page, force));
+    }
+
+    /** 渲染 PDF 单页为 JPEG 图片（前端 OCR 模式直接展示，替代 PDF.js 全量下载） */
+    @GetMapping("/{id}/page-image")
+    public ResponseEntity<byte[]> getPageImage(@PathVariable Long id, @RequestParam int page) {
+        byte[] image = documentService.getPageImage(id, page);
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_JPEG)
+                .header(HttpHeaders.CACHE_CONTROL, "max-age=3600")
+                .body(image);
     }
 
     /** 手动创建章节 */

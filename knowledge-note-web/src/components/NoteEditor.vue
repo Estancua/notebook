@@ -624,9 +624,23 @@ const onJumpPdfPage = ({ pageStart }) => {
 const handleOcrCreateNode = async (payload) => {
   const { text } = payload
   if (!text || !props.noteId) return
-  // 追加为 Markdown 标题到笔记内容末尾
-  const heading = `\n\n## ${text.replace(/\n/g, ' ')}`
-  content.value = (content.value || '') + heading
+
+  if (mode.value === 'mindmap') {
+    // 导图模式下直接插入节点，不重置画布缩放/位置
+    const mm = getMindmapRef()
+    if (mm && typeof mm.insertDragNode === 'function') {
+      mm.insertDragNode(text, {
+        documentId: payload.documentId,
+        page: payload.page,
+        pageStart: payload.pageStart || payload.page,
+        pageEnd: payload.pageEnd || payload.pageStart || payload.page
+      })
+    }
+  } else {
+    // 编辑/预览模式下追加为 Markdown 标题
+    const heading = `\n\n## ${text.replace(/\n/g, ' ')}`
+    content.value = (content.value || '') + heading
+  }
   markDirty()
   // 保存 note_pdf_ref 关联
   try {
@@ -645,7 +659,12 @@ const handleOcrCreateNode = async (payload) => {
 
 // 调用导图方法
 const getMindmapRef = () => {
-  return mindMapViewerRef.value?.mindMapViewerRef?.value
+  const area = mindMapViewerRef.value
+  if (!area) return null
+  const mm = area.mindMapViewerRef
+  if (mm == null) return null
+  // Vue expose 会自动解包 ref，这里兼容「已解包（实例）」和「未解包（ref 对象）」两种情况
+  return (typeof mm === 'object' && 'value' in mm) ? mm.value : mm
 }
 const callMindmap = (method) => {
   const mm = getMindmapRef()

@@ -63,5 +63,11 @@ public interface DocumentService {
      * 获取 PDF 单页 OCR 结果（带缓存，避免重复调用火山引擎API）
      * @return OcrPageVO 包含页面图片 + 文字行坐标
      */
-    OcrPageVO getPageOcrResult(Long documentId, int page);
+    OcrPageVO getPageOcrResult(Long documentId, int page, boolean force);
+
+    /**
+     * 渲染 PDF 单页为 JPEG 图片（前端 OCR 模式直接展示，替代 PDF.js 全量下载）
+     * @return JPEG 图片字节
+     */
+    byte[] getPageImage(Long documentId, int page);
 }

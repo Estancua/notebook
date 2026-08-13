@@ -3,7 +3,7 @@
     <TopBar @search="onGlobalSearch" />
     <div class="main-content">
       <!-- 左栏 -->
-      <div class="left-panel">
+      <div class="left-panel" :class="{ collapsed: leftPanelCollapsed }">
         <NotebookTree
           ref="notebookTreeRef"
           :current-view="currentView"
@@ -21,6 +21,11 @@
           >📄 文档管理</button>
         </div>
       </div>
+      <!-- 左栏折叠按钮 -->
+      <button class="left-panel-toggle" @click="leftPanelCollapsed = !leftPanelCollapsed"
+        :title="leftPanelCollapsed ? '展开侧栏' : '收起侧栏'">
+        {{ leftPanelCollapsed ? '▶' : '◀' }}
+      </button>
       <!-- 中栏 -->
       <div class="center-panel" :class="{ 'mindmap-expanded': isMindmapMode }">
         <!-- 文档管理视图 -->
@@ -162,6 +167,7 @@ const docPreviewVisible = ref(false)
 const previewDoc = ref(null)
 const previewPage = ref(null)
 const showDocUploadDialog = ref(false)
+const leftPanelCollapsed = ref(false)
 
 // Refs
 const noteListRef = ref(null)
@@ -411,6 +417,28 @@ const handleCreateOcrMindmapNode = async (payload) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.2s;
+  width: 260px;
+  flex-shrink: 0;
+}
+.left-panel.collapsed {
+  width: 0;
+  overflow: hidden;
+}
+.left-panel-toggle {
+  width: 18px;
+  border: none;
+  background: #f3f4f6;
+  cursor: pointer;
+  font-size: 11px;
+  color: #6b7280;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.left-panel-toggle:hover {
+  background: #e5e7eb;
+  color: #374151;
 }
 .doc-manage-area {
   padding: 8px;

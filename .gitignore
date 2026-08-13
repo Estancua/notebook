@@ -4,5 +4,8 @@ target/
 *.log
 /dist/
 .vscode/
+**/uploads/
 .idea/
 *.iml
+**/application-dev.yml
+

@@ -40,30 +40,34 @@
           <div v-for="p in visiblePageRange" :key="p"
             :data-ocr-page="p"
             class="ocr-page-wrapper">
-            <!-- 已加载的页面 -->
-            <template v-if="pageDataMap[p]">
-              <div class="ocr-page-container"
-                :style="{ aspectRatio: (pageDims[p]?.width || 595) + '/' + (pageDims[p]?.height || 842) }"
-                @mouseup="handleTextSelect"
-                @mousedown="clearSelection">
-                <canvas
-                  v-if="pageDims[p]"
-                  :ref="(el) => setCanvasRef(el, p)"
-                  class="ocr-page-canvas"
-                ></canvas>
-                <div v-else class="ocr-page-placeholder">加载中...</div>
-                <div class="ocr-text-overlay">
-                  <span v-for="(line, idx) in pageDataMap[p].textLines" :key="idx"
-                    class="ocr-text-line"
-                    :style="lineStyle(line)"
-                    @mousedown.stop>{{ line.text }}</span>
-                </div>
+            <div class="ocr-page-container" :style="{ aspectRatio: pageAspectRatio(p) }">
+              <!-- PDF 页面图片（后端 PDFBox 渲染，按需加载） -->
+              <img :src="pageImageUrl(p)" class="ocr-page-image" :alt="`第${p}页`" />
+              <!-- OCR 文字叠加层（有数据时才渲染） -->
+              <div v-if="pageDataMap[p]" class="ocr-text-overlay"
+                @mousedown.prevent="onOverlayMouseDown($event, p)"
+                @mousemove="onOverlayMouseMove($event, p)"
+                @mouseup="onOverlayMouseUp($event, p)">
+                <template v-for="(line, lineIdx) in pageDataMap[p].textLines" :key="lineIdx">
+                  <span class="ocr-line-group">
+                    <span v-for="(ch, chIdx) in (line.text || '').split('')" :key="chIdx"
+                      class="ocr-char-block"
+                      :class="{ selected: isCharSelected(p, lineIdx, chIdx) }"
+                      :style="charStyle(line, chIdx, (line.text || '').length)"
+                      :data-page="p"
+                      :data-line="lineIdx"
+                      :data-char="chIdx"
+                    ></span>
+                  </span>
+                </template>
               </div>
-            </template>
-            <!-- 未加载的占位 -->
-            <div v-else class="ocr-page-placeholder">
-              <span v-if="pageErrors[p]" class="ocr-page-error">{{ pageErrors[p] }}</span>
-              <span v-else>加载中...</span>
+              <!-- OCR 失败提示角标 -->
+              <div v-if="pageErrors[p] && !pageDataMap[p]" class="ocr-error-badge">
+                <span>⚠ OCR失败</span>
+                <button class="ocr-retry-btn" @click.stop="retryOcr(p)" :disabled="retryingPages.has(p)">
+                  {{ retryingPages.has(p) ? '重试中…' : '重试' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -77,32 +81,7 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, reactive, onBeforeUnmount } from 'vue'
-import { getDocumentPreviewUrl, getPageOcrResult } from '../api/documentApi'
-
-// PDF.js 通过 CDN 加载（避免 Vite 模块兼容问题）
-let pdfjsLib = null
-const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-const WORKER_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-
-const ensurePdfjs = async () => {
-  if (pdfjsLib) return pdfjsLib
-  if (window.pdfjsLib) {
-    pdfjsLib = window.pdfjsLib
-    pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_CDN
-    return pdfjsLib
-  }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.src = PDFJS_CDN
-    script.onload = () => {
-      pdfjsLib = window.pdfjsLib
-      pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_CDN
-      resolve(pdfjsLib)
-    }
-    script.onerror = reject
-    document.head.appendChild(script)
-  })
-}
+import { getDocumentPreviewUrl, getPageOcrResult, getDocumentPageImageUrl } from '../api/documentApi'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -120,26 +99,86 @@ const iframeKey = ref(0)
 const ocrMode = ref(false)
 const currentOcrPage = ref(props.page || 1)  // 当前 OCR 聚焦页
 
-// ===== PDF.js 状态 =====
-let pdfDoc = null
-const pdfLoading = ref(false)
-const canvasRefs = {}
-const renderedPages = reactive(new Set())
-
 // 每页 OCR 数据缓存 { pageNumber: OcrPageVO, ... }
 const pageDataMap = reactive({})
 // 每页错误信息
 const pageErrors = reactive({})
 // 正在加载中的页码
 const loadingPages = reactive(new Set())
-
-// PDF 页面原始尺寸缓存（用于 aspect-ratio）
-const pageDims = reactive({})
+// 正在重试的页码
+const retryingPages = reactive(new Set())
 
 const scrollViewerRef = ref(null)
 const selectedText = ref('')
 const selectedLineIndices = ref([])
 const isDragging = ref(false)
+
+// ===== Word式拖拽选区状态 =====
+const selectedLineKeys = reactive(new Set())
+let selStartPage = 0
+let selStartLineIdx = -1
+let selStartCharIdx = -1
+
+// 根据百分比坐标找到最近的字符块
+const findCharAtPos = (pageNum, percentX, percentY) => {
+  const data = pageDataMap[pageNum]
+  if (!data || !data.textLines) return null
+  let best = null
+  let bestDist = Infinity
+  data.textLines.forEach((line, lineIdx) => {
+    if (percentY < line.y || percentY > line.y + line.height) return
+    const chars = (line.text || '').split('')
+    const charW = line.width / Math.max(chars.length, 1)
+    chars.forEach((ch, chIdx) => {
+      const cx = line.x + chIdx * (line.width / Math.max(chars.length, 1))
+      const cw = charW
+      const distY = Math.abs(percentY - (line.y + line.height / 2))
+      const distX = percentX >= cx && percentX <= cx + cw ? 0 : Math.min(Math.abs(percentX - cx), Math.abs(percentX - cx - cw))
+      const dist = distX * 2 + distY
+      if (dist < bestDist) {
+        bestDist = dist
+        best = { page: pageNum, lineIdx, chIdx, text: ch }
+      }
+    })
+  })
+  return best
+}
+
+// 选中两个字符之间的所有字符（按出现顺序）
+const selectCharRange = (from, to) => {
+  if (!from || !to || from.page !== to.page) return
+  selectedLineKeys.clear()
+  const data = pageDataMap[from.page]
+  if (!data) return
+
+  const allChars = []
+  data.textLines.forEach((line, lineIdx) => {
+    (line.text || '').split('').forEach((ch, chIdx) => {
+      allChars.push({ page: from.page, lineIdx, chIdx, text: ch })
+    })
+  })
+
+  // 找到 from 和 to 在 allChars 中的索引
+  const findIdx = (pos) => allChars.findIndex(c => c.lineIdx === pos.lineIdx && c.chIdx === pos.chIdx)
+  let i1 = findIdx(from)
+  let i2 = findIdx(to)
+  if (i1 === -1 || i2 === -1) return
+  const start = Math.min(i1, i2)
+  const end = Math.max(i1, i2)
+
+  for (let i = start; i <= end; i++) {
+    const c = allChars[i]
+    selectedLineKeys.add(`${c.page}_${c.lineIdx}_${c.chIdx}`)
+  }
+}
+
+const clearSelection = () => {
+  selectedText.value = ''
+  selectedLineKeys.clear()
+  selStartPage = 0
+  selStartLineIdx = -1
+  selStartCharIdx = -1
+}
 
 // 可见页面范围（当前页 ± 3）
 const visiblePageRange = computed(() => {
@@ -160,6 +199,21 @@ const previewUrl = computed(() => {
   const base = getDocumentPreviewUrl(props.documentId)
   return `${base}?_t=${iframeKey.value}#page=${currentPage.value || 1}`
 })
+
+// PDF 单页渲染图片地址（后端 PDFBox 渲染，按需加载）
+const pageImageUrl = (pageNum) => {
+  if (!props.documentId) return ''
+  return getDocumentPageImageUrl(props.documentId, pageNum)
+}
+
+// 页面宽高比：优先用 OCR 结果尺寸（图片加载前占位，保证文字层可交互）
+const pageAspectRatio = (pageNum) => {
+  const d = pageDataMap[pageNum]
+  if (d && d.imageWidth && d.imageHeight) {
+    return `${d.imageWidth} / ${d.imageHeight}`
+  }
+  return '595 / 842'
+}
 
 // 翻页（外部）
 watch(() => props.page, (newPage) => {
@@ -184,7 +238,6 @@ watch(() => [props.documentId, props.visible], () => {
   Object.keys(pageDataMap).forEach(k => delete pageDataMap[k])
   Object.keys(pageErrors).forEach(k => delete pageErrors[k])
   loadingPages.clear()
-  unloadPdfDocument()
 }, { immediate: true })
 
 const jumpToPage = (p) => {
@@ -203,86 +256,6 @@ const jumpToPage = (p) => {
 const prevPage = () => { if (currentPage.value > 1) jumpToPage(currentPage.value - 1) }
 const nextPage = () => { jumpToPage((currentPage.value || 1) + 1) }
 
-// ===== PDF.js 加载与渲染 =====
-const loadPdfDocument = async () => {
-  if (pdfDoc || !props.documentId) return
-  pdfLoading.value = true
-  try {
-    await ensurePdfjs()
-    const url = getDocumentPreviewUrl(props.documentId)
-    const loadingTask = pdfjsLib.getDocument(url)
-    pdfDoc = await loadingTask.promise
-    // 预加载前几页的尺寸信息
-    const numPages = pdfDoc.numPages
-    for (let i = 1; i <= Math.min(numPages, 5); i++) {
-      const page = await pdfDoc.getPage(i)
-      const viewport = page.getViewport({ scale: 1.0 })
-      pageDims[i] = { width: viewport.width, height: viewport.height }
-    }
-  } catch (e) {
-    console.error('PDF.js 加载失败:', e)
-  } finally {
-    pdfLoading.value = false
-  }
-}
-
-const setCanvasRef = (el, pageNum) => {
-  if (el) canvasRefs[pageNum] = el
-}
-
-// PDF.js 渲染比例（1.5 = 108 DPI，清晰度好）
-const RENDER_SCALE = 1.5
-
-const renderPageToCanvas = async (pageNum) => {
-  if (!pdfDoc || renderedPages.has(pageNum)) return
-  renderedPages.add(pageNum)
-  try {
-    const page = await pdfDoc.getPage(pageNum)
-    // 获取页面尺寸（用于 aspect-ratio）
-    if (!pageDims[pageNum]) {
-      const baseViewport = page.getViewport({ scale: 1.0 })
-      pageDims[pageNum] = { width: baseViewport.width, height: baseViewport.height }
-    }
-    // 以 RENDER_SCALE 渲染到 canvas
-    const viewport = page.getViewport({ scale: RENDER_SCALE })
-    const canvas = canvasRefs[pageNum]
-    if (!canvas) { renderedPages.delete(pageNum); return }
-    canvas.width = viewport.width
-    canvas.height = viewport.height
-    canvas.style.width = '100%'
-    canvas.style.height = '100%'
-    const ctx = canvas.getContext('2d')
-    await page.render({ canvasContext: ctx, viewport }).promise
-  } catch (e) {
-    renderedPages.delete(pageNum)
-    console.error(`渲染第${pageNum}页失败:`, e)
-  }
-}
-
-function unloadPdfDocument() {
-  if (pdfDoc) {
-    pdfDoc.destroy()
-    pdfDoc = null
-  }
-  renderedPages.clear()
-  Object.keys(canvasRefs).forEach(k => delete canvasRefs[k])
-  Object.keys(pageDims).forEach(k => delete pageDims[k])
-}
-
-const ensurePageRendered = (pageNum) => {
-  if (pageDims[pageNum] != null) {
-    // 尺寸已知，触发渲染
-    nextTick(() => renderPageToCanvas(pageNum))
-  } else if (pdfDoc) {
-    // 尺寸未知，先获取尺寸再渲染
-    pdfDoc.getPage(pageNum).then(page => {
-      const vp = page.getViewport({ scale: 1.0 })
-      pageDims[pageNum] = { width: vp.width, height: vp.height }
-      nextTick(() => renderPageToCanvas(pageNum))
-    }).catch(() => {})
-  }
-}
-
 // ===== 滚动式 OCR =====
 const toggleOcrMode = async () => {
   if (ocrMode.value) {
@@ -293,13 +266,10 @@ const toggleOcrMode = async () => {
   selectedText.value = ''
   selectedLineIndices.value = []
   currentOcrPage.value = currentPage.value
-  // 清空旧缓存
+  // 清空内存数据缓存（pageErrors 保留，避免失败的页重复调用 OCR API）
   Object.keys(pageDataMap).forEach(k => delete pageDataMap[k])
-  Object.keys(pageErrors).forEach(k => delete pageErrors[k])
   loadingPages.clear()
-  // 加载 PDF.js 文档
-  await loadPdfDocument()
-  // 加载当前页及附近页
+  // 加载当前页及附近页的 OCR
   ensurePagesLoaded(currentPage.value)
 }
 
@@ -359,73 +329,138 @@ const scrollToPage = (p) => {
 const ensurePagesLoaded = (centerPage) => {
   const start = Math.max(1, centerPage - 2)
   const end = centerPage + 2
+  const tasks = []
   for (let i = start; i <= end; i++) {
+    // OCR 数据加载
     if (!pageDataMap[i] && !pageErrors[i] && !loadingPages.has(i)) {
-      loadPageOcr(i)
+      tasks.push(loadPageOcr(i))
     }
   }
+  // 并行执行，不阻塞滚动
+  Promise.all(tasks).catch(() => {})
 }
 
-const loadPageOcr = async (pageNum) => {
+const loadPageOcr = async (pageNum, force = false) => {
   loadingPages.add(pageNum)
   try {
-    const res = await getPageOcrResult(props.documentId, pageNum)
-    if (res && res.textLines) {
+    const res = await getPageOcrResult(props.documentId, pageNum, force)
+    if (res && res.textLines && res.textLines.length > 0) {
       pageDataMap[pageNum] = res
-      // OCR 数据加载成功后，触发 PDF.js 渲染
-      nextTick(() => {
-        ensurePageRendered(pageNum)
-      })
     } else {
-      pageErrors[pageNum] = `第${pageNum}页: OCR 未返回数据`
+      pageErrors[pageNum] = 'OCR 未返回数据'
     }
   } catch (e) {
-    pageErrors[pageNum] = `第${pageNum}页: ` + (e.response?.data?.msg || e.message)
+    pageErrors[pageNum] = e.response?.data?.msg || e.message || 'OCR 失败'
   } finally {
     loadingPages.delete(pageNum)
   }
 }
 
+// 重试失败页的 OCR
+const retryOcr = async (pageNum) => {
+  retryingPages.add(pageNum)
+  delete pageErrors[pageNum]
+  delete pageDataMap[pageNum]
+  try {
+    await loadPageOcr(pageNum, true)
+  } finally {
+    retryingPages.delete(pageNum)
+  }
+}
+
 // 文字选区
-const lineStyle = (line) => ({
-  left: line.x + '%',
-  top: line.y + '%',
-  width: Math.max(line.width, 0.2) + '%',
-  height: line.height + '%',
-  fontSize: (line.height || 2) + '%',
-  lineHeight: line.height + '%'
+const charStyle = (line, chIdx, totalChars) => {
+  const charW = Math.max(line.width, 0.2) / Math.max(totalChars, 1)
+  return {
+    left: (line.x + chIdx * (line.width / Math.max(totalChars, 1))) + '%',
+    top: line.y + '%',
+    width: charW + '%',
+    height: line.height + '%'
+  }
+}
+
+const isCharSelected = (page, lineIdx, chIdx) => {
+  return selectedLineKeys.has(`${page}_${lineIdx}_${chIdx}`)
+}
+
+// 获取鼠标在 overlay 中的百分比坐标
+const getPercentPos = (e) => {
+  const container = e.currentTarget?.closest('.ocr-page-container')
+  if (!container) return { x: 0, y: 0 }
+  const rect = container.getBoundingClientRect()
+  return {
+    x: ((e.clientX - rect.left) / rect.width) * 100,
+    y: ((e.clientY - rect.top) / rect.height) * 100
+  }
+}
+
+const onOverlayMouseDown = (e, pageNum) => {
+  const pos = getPercentPos(e)
+  const char = findCharAtPos(pageNum, pos.x, pos.y)
+  if (char) {
+    selectedLineKeys.clear()
+    selStartPage = char.page
+    selStartLineIdx = char.lineIdx
+    selStartCharIdx = char.chIdx
+    selectedLineKeys.add(`${char.page}_${char.lineIdx}_${char.chIdx}`)
+    isDragging.value = true
+    window.addEventListener('mouseup', globalMouseUp, { once: true })
+  }
+}
+
+const onOverlayMouseMove = (e, pageNum) => {
+  if (!isDragging.value || pageNum !== selStartPage) return
+  const pos = getPercentPos(e)
+  const char = findCharAtPos(pageNum, pos.x, pos.y)
+  if (char) {
+    selectCharRange(
+      { page: selStartPage, lineIdx: selStartLineIdx, chIdx: selStartCharIdx },
+      char
+    )
+  }
+}
+
+const globalMouseUp = () => {
+  if (!isDragging.value) return
+  isDragging.value = false
+  // 收集选中文本
+  const page = selStartPage
+  const data = pageDataMap[page]
+  if (!data) { selectedText.value = ''; return }
+  const texts = []
+  data.textLines.forEach((line, lineIdx) => {
+    (line.text || '').split('').forEach((ch, chIdx) => {
+      if (selectedLineKeys.has(`${page}_${lineIdx}_${chIdx}`)) {
+        texts.push(ch)
+      }
+    })
+  })
+  selectedText.value = texts.join('')
+}
+
+const onOverlayMouseUp = () => { /* handled by globalMouseUp */ }
+
+// 快捷键：Ctrl+B 以选中文字创建导图节点
+const onKeydown = (e) => {
+  if (e.ctrlKey && (e.code === 'KeyB' || e.key === 'b' || e.key === 'B')) {
+    e.preventDefault()
+    if (selectedText.value) {
+      createMindmapNode()
+    }
+  }
+}
+
+// OCR 模式开启时注册全局快捷键，关闭时移除
+watch(ocrMode, (on) => {
+  if (on) {
+    window.addEventListener('keydown', onKeydown)
+  } else {
+    window.removeEventListener('keydown', onKeydown)
+  }
 })
 
-const clearSelection = () => {
-  selectedText.value = ''
-  selectedLineIndices.value = []
-}
-
-const handleTextSelect = () => {
-  nextTick(() => {
-    const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-      clearSelection()
-      return
-    }
-    const text = sel.toString().trim()
-    if (!text) return
-
-    const indices = []
-    if (sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0)
-      const container = scrollViewerRef.value
-      if (container) {
-        const spans = container.querySelectorAll('.ocr-text-line')
-        spans.forEach((span, idx) => {
-          if (range.intersectsNode(span)) indices.push(idx)
-        })
-      }
-    }
-    selectedText.value = text
-    selectedLineIndices.value = indices
-  })
-}
+// 旧方法 - 保留
+const handleTextSelect = () => {}
 
 // HTML5 拖拽：将选中文字传递到导图
 const onDragStart = (e) => {
@@ -451,8 +486,10 @@ const onDragEnd = () => {
 // 创建导图节点（点击按钮方式）
 const createMindmapNode = () => {
   if (!selectedText.value) return
+  // 清理 HTML 标签防止编码问题
+  const cleanText = selectedText.value.replace(/<\/?[^>]+(>|$)/g, '')
   emit('createMindmapNode', {
-    text: selectedText.value,
+    text: cleanText,
     documentId: props.documentId,
     page: currentOcrPage.value,
     pageStart: currentOcrPage.value,
@@ -463,7 +500,8 @@ const createMindmapNode = () => {
 }
 
 onBeforeUnmount(() => {
-  unloadPdfDocument()
+  window.removeEventListener('mouseup', globalMouseUp)
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -511,25 +549,65 @@ onBeforeUnmount(() => {
 .ocr-pages-stack { display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 12px; }
 .ocr-page-wrapper { margin: 0 auto; width: 100%; }
 .ocr-page-container { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.15); width: 100%; max-width: 850px; }
-.ocr-page-canvas { display: block; width: 100%; height: 100%; user-select: none; }
+.ocr-page-image { display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; }
 .ocr-text-overlay {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-  pointer-events: none;
-  user-select: text; -webkit-user-select: text;
+  user-select: none; -webkit-user-select: none;
 }
-.ocr-text-line {
-  position: absolute; pointer-events: auto; cursor: text;
-  color: transparent; overflow: hidden; white-space: nowrap;
-  background: transparent; transition: background 0.15s;
+.ocr-line-group {
+  /* 行容器，用于 hover 整行高亮 */
 }
-.ocr-text-line::selection { color: #fff; background: rgba(59,130,246,0.7); }
-.ocr-text-line::-moz-selection { color: #fff; background: rgba(59,130,246,0.7); }
-.ocr-text-line:hover { background: rgba(250, 204, 21, 0.25); color: transparent; }
-.ocr-page-placeholder {
-  width: 100%; max-width: 850px; aspect-ratio: 0.77;
-  display: flex; align-items: center; justify-content: center;
-  background: #fff; color: #9ca3af; font-size: 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+.ocr-char-block {
+  position: absolute;
+  background: transparent;
+  border: none;
+  cursor: text;
+  border-radius: 0;
+  transition: background 0.1s;
+}
+/* hover 整行时，该行所有字符显示淡色 */
+.ocr-line-group:hover .ocr-char-block {
+  background: rgba(250, 204, 21, 0.25);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  margin: -1px;
+}
+/* 拖拽选中的字符显示蓝色 */
+.ocr-char-block.selected {
+  background: rgba(59, 130, 246, 0.4) !important;
+  border: 1px solid rgba(59, 130, 246, 0.65) !important;
+  margin: -1px;
+}
+.ocr-error-badge {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  z-index: 20;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ocr-retry-btn {
+  padding: 1px 6px;
+  border: 1px solid rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  font-size: 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ocr-retry-btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.3);
+}
+.ocr-retry-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .ocr-page-error { color: #ef4444; }
 </style>
