@@ -106,6 +106,7 @@
             ref="mindMapViewerRef"
             @jump-pdf-page="onJumpPdfPage"
             @ref-changed="refreshPdfRefs"
+            @create-pdf-ref="handleOcrDragNode"
           />
         </div>
         <!-- 分隔条 -->
@@ -153,6 +154,7 @@
         ref="mindMapViewerRef"
         @jump-pdf-page="onJumpPdfPage"
         @ref-changed="refreshPdfRefs"
+        @create-pdf-ref="handleOcrDragNode"
       />
     </div>
     <div class="editor-placeholder" v-else>
@@ -303,7 +305,8 @@ const EditorContentArea = defineComponent({
             'onUpdate:content': (v) => emit('mindmapUpdate', v),
             onBack: () => emit('mindmapBack'),
             onJumpPdfPage: (v) => emit('jumpPdfPage', v),
-            onRefChanged: () => emit('refChanged')
+            onRefChanged: () => emit('refChanged'),
+            onCreatePdfRef: (v) => emit('createPdfRef', v)
           })
         ]) : null
       ])
@@ -315,7 +318,7 @@ const props = defineProps({
   noteId: { type: [Number, String], default: null }
 })
 
-const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active', 'toggle-document-preview'])
+const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active', 'toggle-document-preview', 'createPdfRef'])
 const toast = inject('showToast', () => {})
 
 const title = ref('')
@@ -623,13 +626,20 @@ const onJumpPdfPage = ({ pageStart }) => {
 // OCR 文字 → 添加到当前笔记（导图节点）
 const handleOcrCreateNode = async (payload) => {
   const { text } = payload
+  console.log('[ocr-create] called, text=', JSON.stringify(text), 'noteId=', props.noteId, 'mode=', mode.value)
   if (!text || !props.noteId) return
+
+  // 生成统一的节点 uid，导图节点与 note_pdf_ref 共用，
+  // 保证节点二次编辑文字后仍能匹配到页码关联
+  const nodeUid = 'ocr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)
 
   if (mode.value === 'mindmap') {
     // 导图模式下直接插入节点，不重置画布缩放/位置
     const mm = getMindmapRef()
+    console.log('[ocr-create] getMindmapRef =', !!mm)
     if (mm && typeof mm.insertDragNode === 'function') {
       mm.insertDragNode(text, {
+        uid: nodeUid,
         documentId: payload.documentId,
         page: payload.page,
         pageStart: payload.pageStart || payload.page,
@@ -644,9 +654,32 @@ const handleOcrCreateNode = async (payload) => {
   markDirty()
   // 保存 note_pdf_ref 关联
   try {
+    const saved = await savePdfRef({
+      noteId: props.noteId,
+      nodeUid,
+      nodeTitle: text.length > 50 ? text.substring(0, 50) : text,
+      pageStart: payload.pageStart || payload.page,
+      pageEnd: payload.pageEnd || payload.pageStart || payload.page,
+      excerpt: text.length > 500 ? text.substring(0, 500) : text
+    })
+    console.log('[ocr-create] savePdfRef ok, id=', saved && saved.id, 'nodeUid=', nodeUid)
+    await refreshPdfRefs()
+    console.log('[ocr-create] pdfRefs.length after refresh =', pdfRefs.value.length)
+  } catch (e) {
+    console.log('[ocr-create] savePdfRef ERROR =', e)
+  }
+  toast(`已添加节点: ${text.substring(0, 20)}`, 'success')
+}
+
+// 拖拽 OCR 文字创建导图节点 → 保存 pdf 关联（与 handleOcrCreateNode 的入库逻辑一致）
+const handleOcrDragNode = async (payload) => {
+  const { uid, text } = payload || {}
+  if (!text || !uid || !props.noteId) return
+  markDirty()
+  try {
     await savePdfRef({
       noteId: props.noteId,
-      nodeUid: 'h2_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      nodeUid: uid,
       nodeTitle: text.length > 50 ? text.substring(0, 50) : text,
       pageStart: payload.pageStart || payload.page,
       pageEnd: payload.pageEnd || payload.pageStart || payload.page,
@@ -654,7 +687,6 @@ const handleOcrCreateNode = async (payload) => {
     })
     refreshPdfRefs()
   } catch (e) { /* 关联失败不影响主流程 */ }
-  toast(`已添加节点: ${text.substring(0, 20)}`, 'success')
 }
 
 // 调用导图方法

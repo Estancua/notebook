@@ -217,12 +217,14 @@ const pageAspectRatio = (pageNum) => {
 
 // 翻页（外部）
 watch(() => props.page, (newPage) => {
+  console.log('[watch:page] newPage =', newPage, ', currentPage =', currentPage.value, ', ocrMode =', ocrMode.value)
   if (newPage && newPage >= 1 && newPage !== currentPage.value) {
     currentPage.value = newPage
     pageInput.value = newPage
     iframeKey.value++
     if (ocrMode.value) {
       currentOcrPage.value = newPage
+      scrollToPageSlot(newPage)
       ensurePagesLoaded(newPage)
     }
   }
@@ -470,6 +472,7 @@ const onDragStart = (e) => {
   e.dataTransfer.setData('text/plain', selectedText.value)
   // 附带元信息，供 MindMapViewer 创建 PDF 关联
   const meta = JSON.stringify({
+    uid: 'ocr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
     text: selectedText.value,
     documentId: props.documentId,
     page: currentOcrPage.value,

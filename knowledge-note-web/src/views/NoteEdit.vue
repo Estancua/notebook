@@ -68,7 +68,7 @@ watch(() => route.params.noteId, (newId) => {
   loadNoteDetail()
 }, { immediate: true })
 
-const loadNoteDetail = async () => {
+async function loadNoteDetail() {
   noteId.value = route.params.noteId
   if (!noteId.value) return
   try {
