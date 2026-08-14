@@ -6,12 +6,15 @@
 import sys, json, base64, os
 from volcengine.visual.VisualService import VisualService
 
-AK = os.environ["VOLCANO_AK"]
-SK = os.environ["VOLCANO_SK"]
-
 
 def main():
     try:
+        AK = os.environ.get("VOLCANO_AK")
+        SK = os.environ.get("VOLCANO_SK")
+        if not AK or not SK:
+            print(json.dumps({"success": False, "error": "环境变量 VOLCANO_AK / VOLCANO_SK 未设置"}))
+            sys.exit(1)
+
         raw = sys.stdin.read()
         req_data = json.loads(raw)
         image_base64 = req_data["image_base64"]

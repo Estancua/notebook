@@ -37,6 +37,11 @@ export function getDocumentPreviewUrl(id) {
   return `/api/document/${id}/preview`
 }
 
+// 获取 PDF 单页渲染图片 URL（前端 OCR 模式直接展示）
+export function getDocumentPageImageUrl(id, page) {
+  return `/api/document/${id}/page-image?page=${page}`
+}
+
 // 获取章节列表
 export function getChapterList(documentId) {
   return request.get(`/document/chapter/list/${documentId}`)
@@ -62,6 +67,16 @@ export function updateChapter(chapterId, data) {
   return request.put(`/document/chapter/${chapterId}`, data)
 }
 
+// 手动创建章节
+export function createChapter(data) {
+  return request.post('/document/chapter', data)
+}
+
+// 删除章节（级联删除子章节）
+export function deleteChapter(chapterId) {
+  return request.delete(`/document/chapter/${chapterId}`)
+}
+
 // OCR 识别 PDF 指定页（返回纯文本）
 export function ocrPage(documentId, page) {
   return request.post(`/document/${documentId}/ocr-page`, null, { params: { page } })
@@ -72,7 +87,7 @@ export function ocrPageWithPositions(documentId, page) {
   return request.post(`/document/${documentId}/ocr-page-with-positions`, null, { params: { page } })
 }
 
-// 获取 PDF 单页 OCR 结果（带缓存，首次自动识别并缓存）
-export function getPageOcrResult(documentId, page) {
-  return request.get(`/document/${documentId}/ocr-page-result`, { params: { page } })
+// 获取 PDF 单页 OCR 结果（带缓存，首次自动识别并缓存；force=true 跳过失败缓存重新识别）
+export function getPageOcrResult(documentId, page, force = false) {
+  return request.get(`/document/${documentId}/ocr-page-result`, { params: { page, force } })
 }

@@ -1,5 +1,6 @@
 # ============================
-# 知识笔记系统 - 开发环境配置
+# 知识笔记系统 - 开发环境配置（模板）
+# 复制此文件为 application-dev.yml 并填入真实配置
 # ============================
 
 server:
@@ -63,3 +64,7 @@ embedding:
   model: bge-large-zh-v1.5
   dims: 1024
   base-url: http://localhost:8081
+
+volcano:
+  ak: your-volcano-ak-here
+  sk: your-volcano-sk-here

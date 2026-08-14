@@ -872,6 +872,85 @@ Home.vue
             └─ 选中文字 → emit('createMindmapNode') → Home.vue 创建笔记+关联
 ```
 
+### V0.2.6 PDF 渲染与 OCR 交互增强（2026-08-13）
+
+**1. PDF 渲染方案变更：PDF.js → 后端单页图片渲染**
+
+- 移除前端 PDF.js（含 Range 请求、pdf.worker），改由后端 PDFBox 渲染单页为 JPEG
+- 新增接口 `GET /api/document/{id}/page-image?page=N`（`DocumentServiceImpl.getPageImage`，1.5x 渲染 + 超 2000px 降采样）
+- 前端 `PdfPreview.vue` 按需加载可见页图片，OCR 文字层按百分比坐标叠加对齐
+- 页面宽高比用 OCR 结果 `imageWidth/imageHeight` 占位，避免图片未加载时文字层高度为 0
+
+**2. OCR 失败重试**
+
+- OCR 失败时页面显示"⚠ OCR失败"提示 + 重试小按钮（`retryOcr(page)`）
+- 失败结果以 `__OCR_FAILED__:` 前缀写入 `page_ocr_cache`，重试时 force=true 删除失败缓存重新识别
+
+**3. 快捷键 Ctrl+B 创建导图节点**
+
+- OCR 选区模式选中文字后按 `Ctrl+B` 直接创建导图节点（中文输入法占用 Ctrl+Space，故弃用）
+- 点击"创建导图节点"按钮与快捷键行为一致，且不重置导图缩放和视图位置
+
+### V0.2.6 接口变更
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/document/{id}/page-image?page=N` | GET | 后端渲染 PDF 单页 JPEG，替代 PDF.js 前端渲染 |
+
 ---
 
-文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-11（章节独立绑定 + 知识点导航 + OCR选区拖拽导图）| 状态：进行中
+## 13. Bug 修复记录
+
+### 13.1 导图节点无法拖拽 (2026-08-12)
+
+**问题**：导图节点选中后无法拖拽移动，也无法拖拽到其他节点上建立新关系。
+
+**根因**：`MindMapViewer.vue` 导入的是 `simple-mind-map` 核心库（`index.js`），该核心库不包含 Drag 插件。Drag 是独立插件（`src/plugins/Drag.js`），位于 `full.js` 完整版中。
+
+**修复**：将导入路径从 `import MindMap from 'simple-mind-map'` 改为 `import MindMap from 'simple-mind-map/full.js'`。
+
+**影响文件**：`knowledge-note-web/src/components/MindMapViewer.vue` 第 70 行。
+
+### 13.2 视图切换导致内容 HTML 重复编码 (2026-08-12)
+
+**问题**：编辑/预览和导图模式之间来回切换，内容出现 `<p>&lt;p&gt;...` 嵌套 HTML 编码，且非标题段落内容丢失。
+
+**根因**：
+1. `parseMdToTree` 只提取 `#` 标题行，普通段落全部丢弃
+2. 导图初始化时的 `data_change` 事件触发 `syncToMarkdown` 将内容覆盖为空
+3. 卸载时未清理 debounce timer 导致残留同步
+
+**修复**：
+1. `parseMdToTree` 保留非标题行为段落节点（标记 `_isParagraph`）
+2. `treeToMarkdown` 对段落节点不加 `#` 前缀，直接输出文本
+3. 跳过首次 `data_change`，避免初始化覆盖原始 content
+4. `onBeforeUnmount` 中 `clearTimeout(syncTimer)`
+
+**影响文件**：`knowledge-note-web/src/components/MindMapViewer.vue`
+
+### 13.3 "编辑章节"按钮改为内联标题编辑 (2026-08-12)
+
+**问题**："编辑章节"按钮打开原始 JSON 编辑器修改 `doc.parseResult`，但 V0.2 已将章节拆为 `document_chapter` 表，应通过 `updateChapter` API 单独编辑。
+
+**修复**：
+1. 移除 JSON 编辑区（`startEdit`/`saveEdit`/`cancelEdit`/`editingDocId`/`editText`）
+2. 新增 `editingTitlesDocId` 状态和 `toggleEditTitles` 切换
+3. 按钮改为"编辑标题"/"完成编辑"（toggle）
+4. ChapterItem 在编辑模式下显示可编辑 input，回车保存/ESC取消，调用 `updateChapter(id, {title})`
+5. `editingTitles` prop 和 `title-saved` event 递归传递给子章节
+
+**影响文件**：`knowledge-note-web/src/components/DocumentPanel.vue`
+
+### 13.4 快捷键创建导图节点文字未填入 (2026-08-13)
+
+**问题**：OCR 选区文字按 Ctrl+B / 点击"创建导图节点"后，节点已创建但显示默认文本，选中文字未填入。
+
+**根因**：`insertDragNode` 调用 `execCommand('INSERT_CHILD_NODE')`，其默认 `openEdit=true` 会进入编辑态并清空激活节点列表，随后 `SET_NODE_TEXT(activeNodes[0], text)` 取到的不是新节点，文字设置失效。
+
+**修复**：参考 simple-mind-map 自身粘贴逻辑，改用 `execCommand('INSERT_CHILD_NODE', false, [], { text })`，通过 `appointData` 在创建时直接写入节点文字，`openEdit=false` 避免进入编辑态/清空激活列表。
+
+**影响文件**：`knowledge-note-web/src/components/MindMapViewer.vue`（insertDragNode）
+
+---
+
+文档版本：V0.2 | 创建日期：2026-08-10 | 最近更新：2026-08-13（PDF 后端图片渲染 + OCR 失败重试 + Ctrl+B 快捷键 + 节点文字修复）| 状态：进行中

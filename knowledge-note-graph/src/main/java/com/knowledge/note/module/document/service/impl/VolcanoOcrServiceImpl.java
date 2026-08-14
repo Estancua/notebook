@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.knowledge.note.module.document.service.VolcanoOcrService;
 import com.knowledge.note.module.document.vo.OcrPageVO;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
@@ -18,6 +19,12 @@ import java.util.*;
 @Slf4j
 @Service
 public class VolcanoOcrServiceImpl implements VolcanoOcrService {
+
+    @Value("${volcano.ak:}")
+    private String volcanoAk;
+
+    @Value("${volcano.sk:}")
+    private String volcanoSk;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -100,8 +107,17 @@ public class VolcanoOcrServiceImpl implements VolcanoOcrService {
 
         ProcessBuilder pb = new ProcessBuilder(PYTHON, scriptPath);
         pb.redirectErrorStream(true);
-
-        log.debug("Starting Python OCR: {} {}", PYTHON, scriptPath);
+        // 传入 AK/SK 环境变量（从 application.yml 读取）
+        Map<String, String> env = pb.environment();
+        if (volcanoAk != null && !volcanoAk.isEmpty()) {
+            env.put("VOLCANO_AK", volcanoAk);
+        }
+        if (volcanoSk != null && !volcanoSk.isEmpty()) {
+            env.put("VOLCANO_SK", volcanoSk);
+        }
+        log.debug("Python OCR env: AK={}, SK={}",
+                volcanoAk != null && !volcanoAk.isEmpty() ? "set" : "missing",
+                volcanoSk != null && !volcanoSk.isEmpty() ? "set" : "missing");
         Process process = pb.start();
 
         try (OutputStream os = process.getOutputStream()) {
@@ -118,7 +134,19 @@ public class VolcanoOcrServiceImpl implements VolcanoOcrService {
             }
         }
 
-        int exitCode = process.waitFor();
+        int exitCode;
+        try {
+            boolean finished = process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new RuntimeException("Python OCR script timed out after 60s");
+            }
+            exitCode = process.exitValue();
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Python OCR script interrupted", e);
+        }
         String outputStr = output.toString();
 
         if (exitCode != 0) {

@@ -510,8 +510,17 @@ public class DocumentServiceImpl implements DocumentService {
                 throw new BusinessException(400, "页码超出范围: " + page + "，总页数: " + totalPages);
             }
             PDFRenderer renderer = new PDFRenderer(pdfDoc);
-            // 渲染为图片（1.2x DPI 兼顾清晰度和文件大小）
-            BufferedImage image = renderer.renderImage(page - 1, 1.2f);
+            // 渲染图片，限制最大尺寸避免 Python 进程 OOM/管道溢出
+            // 先尝试 1.2f，超限则逐步降低至合适尺寸
+            float scale = 1.2f;
+            BufferedImage image = renderer.renderImage(page - 1, scale);
+            int maxDim = 2000;
+            while ((image.getWidth() > maxDim || image.getHeight() > maxDim) && scale > 0.5f) {
+                scale -= 0.2f;
+                image = renderer.renderImage(page - 1, scale);
+                log.info("OCR page {} image too large ({}x{}), scaling down to {}x -> {}x{}",
+                        page, image.getWidth(), image.getHeight(), scale, image.getWidth(), image.getHeight());
+            }
             int pw = image.getWidth();
             int ph = image.getHeight();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -521,30 +530,124 @@ public class DocumentServiceImpl implements DocumentService {
                     documentId, page, totalPages, baos.size() / 1024, pw, ph);
 
             List<OcrPageVO.TextLine> lines = volcanoOcrService.recognizeLines(base64, pw, ph);
-            return new OcrPageVO(base64, pw, ph, lines);
+            // 前端用 PDF.js 渲染，不再返回 base64 图片
+            return new OcrPageVO(null, pw, ph, lines);
         } catch (IOException e) {
             log.error("OCR 页面渲染失败: documentId={} page={}", documentId, page, e);
             throw new BusinessException(500, "OCR 页面渲染失败: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("OCR 识别异常: documentId={} page={}", documentId, page, e);
+            throw new BusinessException(500, "OCR 识别失败: " + e.getMessage());
+        }
+    }
+
+    private static final String OCR_FAILED_PREFIX = "__OCR_FAILED__:";
+
+    @Override
+    public byte[] getPageImage(Long documentId, int page) {
+        DocumentSection doc = documentSectionMapper.selectById(documentId);
+        if (doc == null) {
+            throw new BusinessException(404, "文档不存在");
+        }
+        if (!"PDF".equalsIgnoreCase(doc.getFileType())) {
+            throw new BusinessException(400, "仅支持 PDF 文档");
+        }
+        Path filePath = Paths.get(doc.getFilePath());
+        if (!Files.exists(filePath)) {
+            File f = new File(doc.getFilePath());
+            if (!f.exists()) {
+                throw new BusinessException(404, "PDF 文件不存在: " + doc.getFilePath());
+            }
+            filePath = f.toPath();
+        }
+        try (PDDocument pdfDoc = Loader.loadPDF(filePath.toFile())) {
+            int totalPages = pdfDoc.getNumberOfPages();
+            if (page < 1 || page > totalPages) {
+                throw new BusinessException(400, "页码超出范围: " + page + "，总页数: " + totalPages);
+            }
+            PDFRenderer renderer = new PDFRenderer(pdfDoc);
+            // 渲染单页为 JPEG，与 OCR 使用相同渲染器，保证文字坐标百分比对齐
+            float scale = 1.5f;
+            BufferedImage image = renderer.renderImage(page - 1, scale);
+            int maxDim = 2000;
+            while ((image.getWidth() > maxDim || image.getHeight() > maxDim) && scale > 0.5f) {
+                scale -= 0.2f;
+                image = renderer.renderImage(page - 1, scale);
+            }
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(image, "jpg", baos);
+            return baos.toByteArray();
+        } catch (IOException e) {
+            log.error("页面图片渲染失败: documentId={} page={}", documentId, page, e);
+            throw new BusinessException(500, "页面图片渲染失败: " + e.getMessage());
         }
     }
 
     @Override
-    public OcrPageVO getPageOcrResult(Long documentId, int page) {
+    public OcrPageVO getPageOcrResult(Long documentId, int page, boolean force) {
         // 1. 查缓存
         LambdaQueryWrapper<PageOcrCache> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(PageOcrCache::getDocumentId, documentId);
         wrapper.eq(PageOcrCache::getPageNumber, page);
         PageOcrCache cached = pageOcrCacheMapper.selectOne(wrapper);
         if (cached != null) {
-            log.info("OCR 缓存命中: documentId={} page={}", documentId, page);
-            return buildOcrPageVOFromCache(cached);
+            // 检查是否为失败缓存
+            if (cached.getOcrText() != null && cached.getOcrText().startsWith(OCR_FAILED_PREFIX)) {
+                if (force) {
+                    // 强制重试：删除失败缓存，重新 OCR
+                    log.info("OCR 强制重试: documentId={} page={}，删除失败缓存", documentId, page);
+                    pageOcrCacheMapper.delete(wrapper);
+                } else {
+                    String errorMsg = cached.getOcrText().substring(OCR_FAILED_PREFIX.length());
+                    log.info("OCR 缓存命中（失败记录）: documentId={} page={} error={}", documentId, page, errorMsg);
+                    throw new BusinessException(500, errorMsg);
+                }
+            } else {
+                log.info("OCR 缓存命中: documentId={} page={}", documentId, page);
+                return buildOcrPageVOFromCache(cached);
+            }
         }
         // 2. 缓存未命中，执行 OCR
         log.info("OCR 缓存未命中，执行识别: documentId={} page={}", documentId, page);
-        OcrPageVO result = ocrPageWithPositions(documentId, page);
-        // 3. 写入缓存
-        saveOcrCache(documentId, page, result);
-        return result;
+        try {
+            OcrPageVO result = ocrPageWithPositions(documentId, page);
+            // 3. 写入缓存
+            saveOcrCache(documentId, page, result);
+            return result;
+        } catch (BusinessException e) {
+            // OCR 失败也写缓存，避免重复消耗 API 额度
+            saveOcrCacheFailed(documentId, page, e.getMessage());
+            throw e;
+        } catch (Exception e) {
+            String msg = "OCR 识别失败: " + e.getMessage();
+            saveOcrCacheFailed(documentId, page, msg);
+            throw new BusinessException(500, msg);
+        }
+    }
+
+    private void saveOcrCacheFailed(Long documentId, int page, String errorMsg) {
+        try {
+            // 先检查是否已有缓存（并发场景下可能已被其他请求写入）
+            LambdaQueryWrapper<PageOcrCache> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(PageOcrCache::getDocumentId, documentId);
+            wrapper.eq(PageOcrCache::getPageNumber, page);
+            if (pageOcrCacheMapper.selectCount(wrapper) > 0) {
+                return;
+            }
+            PageOcrCache entity = new PageOcrCache();
+            entity.setDocumentId(documentId);
+            entity.setPageNumber(page);
+            entity.setImageBase64(null);
+            entity.setOcrText(OCR_FAILED_PREFIX + errorMsg);
+            entity.setTextLines("[]");
+            entity.setImageWidth(0);
+            entity.setImageHeight(0);
+            entity.setCreatedAt(LocalDateTime.now());
+            pageOcrCacheMapper.insert(entity);
+            log.info("OCR 失败结果已缓存: documentId={} page={} error={}", documentId, page, errorMsg);
+        } catch (Exception e) {
+            log.warn("OCR 失败缓存写入失败: documentId={} page={}", documentId, page, e);
+        }
     }
 
     private void saveOcrCache(Long documentId, int page, OcrPageVO result) {
@@ -552,7 +655,8 @@ public class DocumentServiceImpl implements DocumentService {
             PageOcrCache entity = new PageOcrCache();
             entity.setDocumentId(documentId);
             entity.setPageNumber(page);
-            entity.setImageBase64(result.getImageBase64());
+            // 图片不再存入 DB（前端 PDF.js 直接渲染），仅存坐标元数据
+            entity.setImageBase64(null);
             entity.setImageWidth(result.getImageWidth());
             entity.setImageHeight(result.getImageHeight());
             // 从 textLines 提取纯文本
@@ -570,7 +674,7 @@ public class DocumentServiceImpl implements DocumentService {
             log.info("OCR 结果已缓存: documentId={} page={} lines={}", documentId, page,
                     result.getTextLines() != null ? result.getTextLines().size() : 0);
         } catch (Exception e) {
-            log.warn("OCR 缓存写入失败（不影响主流程）: documentId={} page={}", documentId, page, e);
+            log.error("OCR 缓存写入失败（不影响主流程）: documentId={} page={} error={}", documentId, page, e.toString(), e);
         }
     }
 

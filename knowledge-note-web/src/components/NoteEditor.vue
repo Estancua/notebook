@@ -12,7 +12,19 @@
       </div>
       <!-- 工具栏 -->
       <div class="editor-toolbar">
-        <template v-if="mode !== 'mindmap'">
+        <template v-if="mode === 'mindmap'">
+        <button class="tool-btn" @click="callMindmap('addChildNode')" title="添加子节点">＋</button>
+        <button class="tool-btn" @click="callMindmap('deleteNode')" title="删除选中节点">✕</button>
+        <span class="toolbar-sep"></span>
+        <button class="tool-btn" @click="callMindmap('expandAllNodes')" title="展开全部">⊞◢</button>
+        <button class="tool-btn" @click="callMindmap('collapseAllNodes')" title="收缩全部">⊞◣</button>
+        <span class="toolbar-sep"></span>
+        <button class="tool-btn" @click="callMindmap('fitCanvas')" title="适应画布">⊞</button>
+        <button class="tool-btn" @click="callMindmap('zoomIn')" title="放大">🔍+</button>
+        <button class="tool-btn" @click="callMindmap('zoomOut')" title="缩小">🔍−</button>
+        <span class="toolbar-sep"></span>
+        </template>
+        <template v-else>
         <button class="tool-btn" title="加粗 (Ctrl+B)" @click="wrapText('**')">B</button>
         <button class="tool-btn" title="斜体 (Ctrl+I)" @click="wrapText('*')"><em>I</em></button>
         <button class="tool-btn" title="标题1" @click="insertLine('# ')">H1</button>
@@ -94,6 +106,7 @@
             ref="mindMapViewerRef"
             @jump-pdf-page="onJumpPdfPage"
             @ref-changed="refreshPdfRefs"
+            @create-pdf-ref="handleOcrDragNode"
           />
         </div>
         <!-- 分隔条 -->
@@ -141,6 +154,7 @@
         ref="mindMapViewerRef"
         @jump-pdf-page="onJumpPdfPage"
         @ref-changed="refreshPdfRefs"
+        @create-pdf-ref="handleOcrDragNode"
       />
     </div>
     <div class="editor-placeholder" v-else>
@@ -279,7 +293,10 @@ const EditorContentArea = defineComponent({
         ]) : null,
 
         // Mindmap pane
-        showMindmapPane ? h('div', { class: 'mindmap-pane' }, [
+        showMindmapPane ? h('div', {
+          class: 'mindmap-pane',
+          style: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }
+        }, [
           h(MindMapViewer, {
             ref: (r) => { mindMapViewerRef.value = r },
             content: props.mindmapContent,
@@ -288,7 +305,8 @@ const EditorContentArea = defineComponent({
             'onUpdate:content': (v) => emit('mindmapUpdate', v),
             onBack: () => emit('mindmapBack'),
             onJumpPdfPage: (v) => emit('jumpPdfPage', v),
-            onRefChanged: () => emit('refChanged')
+            onRefChanged: () => emit('refChanged'),
+            onCreatePdfRef: (v) => emit('createPdfRef', v)
           })
         ]) : null
       ])
@@ -300,7 +318,7 @@ const props = defineProps({
   noteId: { type: [Number, String], default: null }
 })
 
-const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active', 'toggle-document-preview'])
+const emit = defineEmits(['saved', 'word-count-change', 'mindmap-active', 'toggle-document-preview', 'createPdfRef'])
 const toast = inject('showToast', () => {})
 
 const title = ref('')
@@ -608,16 +626,60 @@ const onJumpPdfPage = ({ pageStart }) => {
 // OCR 文字 → 添加到当前笔记（导图节点）
 const handleOcrCreateNode = async (payload) => {
   const { text } = payload
+  console.log('[ocr-create] called, text=', JSON.stringify(text), 'noteId=', props.noteId, 'mode=', mode.value)
   if (!text || !props.noteId) return
-  // 追加为 Markdown 标题到笔记内容末尾
-  const heading = `\n\n## ${text.replace(/\n/g, ' ')}`
-  content.value = (content.value || '') + heading
+
+  // 生成统一的节点 uid，导图节点与 note_pdf_ref 共用，
+  // 保证节点二次编辑文字后仍能匹配到页码关联
+  const nodeUid = 'ocr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)
+
+  if (mode.value === 'mindmap') {
+    // 导图模式下直接插入节点，不重置画布缩放/位置
+    const mm = getMindmapRef()
+    console.log('[ocr-create] getMindmapRef =', !!mm)
+    if (mm && typeof mm.insertDragNode === 'function') {
+      mm.insertDragNode(text, {
+        uid: nodeUid,
+        documentId: payload.documentId,
+        page: payload.page,
+        pageStart: payload.pageStart || payload.page,
+        pageEnd: payload.pageEnd || payload.pageStart || payload.page
+      })
+    }
+  } else {
+    // 编辑/预览模式下追加为 Markdown 标题
+    const heading = `\n\n## ${text.replace(/\n/g, ' ')}`
+    content.value = (content.value || '') + heading
+  }
   markDirty()
   // 保存 note_pdf_ref 关联
   try {
+    const saved = await savePdfRef({
+      noteId: props.noteId,
+      nodeUid,
+      nodeTitle: text.length > 50 ? text.substring(0, 50) : text,
+      pageStart: payload.pageStart || payload.page,
+      pageEnd: payload.pageEnd || payload.pageStart || payload.page,
+      excerpt: text.length > 500 ? text.substring(0, 500) : text
+    })
+    console.log('[ocr-create] savePdfRef ok, id=', saved && saved.id, 'nodeUid=', nodeUid)
+    await refreshPdfRefs()
+    console.log('[ocr-create] pdfRefs.length after refresh =', pdfRefs.value.length)
+  } catch (e) {
+    console.log('[ocr-create] savePdfRef ERROR =', e)
+  }
+  toast(`已添加节点: ${text.substring(0, 20)}`, 'success')
+}
+
+// 拖拽 OCR 文字创建导图节点 → 保存 pdf 关联（与 handleOcrCreateNode 的入库逻辑一致）
+const handleOcrDragNode = async (payload) => {
+  const { uid, text } = payload || {}
+  if (!text || !uid || !props.noteId) return
+  markDirty()
+  try {
     await savePdfRef({
       noteId: props.noteId,
-      nodeUid: 'h2_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      nodeUid: uid,
       nodeTitle: text.length > 50 ? text.substring(0, 50) : text,
       pageStart: payload.pageStart || payload.page,
       pageEnd: payload.pageEnd || payload.pageStart || payload.page,
@@ -625,7 +687,22 @@ const handleOcrCreateNode = async (payload) => {
     })
     refreshPdfRefs()
   } catch (e) { /* 关联失败不影响主流程 */ }
-  toast(`已添加节点: ${text.substring(0, 20)}`, 'success')
+}
+
+// 调用导图方法
+const getMindmapRef = () => {
+  const area = mindMapViewerRef.value
+  if (!area) return null
+  const mm = area.mindMapViewerRef
+  if (mm == null) return null
+  // Vue expose 会自动解包 ref，这里兼容「已解包（实例）」和「未解包（ref 对象）」两种情况
+  return (typeof mm === 'object' && 'value' in mm) ? mm.value : mm
+}
+const callMindmap = (method) => {
+  const mm = getMindmapRef()
+  if (mm && typeof mm[method] === 'function') {
+    mm[method]()
+  }
 }
 
 // 知识点导航抽屉
@@ -633,8 +710,8 @@ const onNavItemClick = (ref) => {
   if (showPdfPanel.value && bindInfo.value) {
     jumpToPage(ref.pageStart)
   }
-  if (mode.value === 'mindmap' && mindMapViewerRef.value && mindMapViewerRef.value.mindMapViewerRef) {
-    const mm = mindMapViewerRef.value.mindMapViewerRef.value
+  if (mode.value === 'mindmap') {
+    const mm = getMindmapRef()
     if (mm && mm.centerNodeByUid && ref.nodeUid) {
       mm.centerNodeByUid(ref.nodeUid)
     }
@@ -699,17 +776,18 @@ defineExpose({ loadNote, save })
 <style scoped>
 .note-editor-outer {
   display: flex;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  height: 100%;
   position: relative;
   overflow: hidden;
 }
 .note-editor {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  background: #fff;
   flex: 1;
+  min-height: 0;
+  background: #fff;
   min-width: 0;
   overflow: hidden;
 }
@@ -855,6 +933,7 @@ defineExpose({ loadNote, save })
   display: flex;
   overflow: hidden;
   position: relative;
+  min-height: 0;
 }
 .editor-content.split .edit-pane,
 .editor-content.split .preview-pane {
@@ -929,13 +1008,15 @@ defineExpose({ loadNote, save })
   flex: 1;
   display: flex;
   width: 100%;
-  height: 100%;
+  min-height: 0;
 }
 .editor-content.mindmap {
   flex: 1;
+  min-height: 0;
 }
 .editor-content.mindmap .mindmap-pane {
   flex: 1;
+  min-height: 0;
 }
 .editor-content.mindmap .edit-pane,
 .editor-content.mindmap .preview-pane {

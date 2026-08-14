@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 /**
  * 全局异常处理器
@@ -12,6 +13,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /** 客户端中断连接（如 PDF.js 中断 Range 请求），属正常现象，直接忽略不写响应 */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleClientAbort(AsyncRequestNotUsableException e) {
+        log.info("客户端中断连接（可忽略）: {}", e.getMessage());
+    }
 
     /** 业务异常 */
     @ExceptionHandler(BusinessException.class)

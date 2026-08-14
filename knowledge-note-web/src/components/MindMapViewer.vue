@@ -1,21 +1,5 @@
 <template>
   <div class="mindmap-editor">
-    <div class="mindmap-toolbar">
-      <span class="toolbar-title">🧠 思维导图</span>
-      <div class="toolbar-actions">
-        <button class="tool-btn" @click="addChildNode" title="添加子节点">＋</button>
-        <button class="tool-btn" @click="deleteNode" title="删除选中节点">✕</button>
-        <span class="toolbar-sep"></span>
-        <button class="tool-btn" @click="expandAllNodes" title="展开全部">⊞◢</button>
-        <button class="tool-btn" @click="collapseAllNodes" title="收缩全部">⊞◣</button>
-        <span class="toolbar-sep"></span>
-        <button class="tool-btn" @click="fitCanvas" title="适应画布">⊞</button>
-        <button class="tool-btn" @click="zoomIn" title="放大">🔍+</button>
-        <button class="tool-btn" @click="zoomOut" title="缩小">🔍−</button>
-        <span class="toolbar-sep"></span>
-        <button class="tool-btn" @click="emitBack" title="返回编辑">⬅</button>
-      </div>
-    </div>
     <div class="mindmap-canvas" ref="canvasRef" @dragover.prevent @drop="onDrop"></div>
 
     <!-- 选中节点悬浮工具栏 -->
@@ -83,7 +67,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick, inject, computed } from 'vue'
-import MindMap from 'simple-mind-map'
+import MindMap from 'simple-mind-map/full.js'
 import { savePdfRef, deletePdfRef } from '../api/noteApi'
 
 const props = defineProps({
@@ -91,13 +75,16 @@ const props = defineProps({
   noteId: { type: [Number, String], default: null },
   pdfRefs: { type: Array, default: () => [] }
 })
-const emit = defineEmits(['update:content', 'back', 'jumpPdfPage', 'openPdfRefDialog', 'refChanged'])
+const emit = defineEmits(['update:content', 'back', 'jumpPdfPage', 'openPdfRefDialog', 'refChanged', 'createPdfRef'])
 
 const canvasRef = ref(null)
 let mindMap = null
 let resizeObserver = null
 const toast = inject('showToast', () => {})
 let isInternalUpdate = false
+let isFirstDataChange = true
+// 最近一次内部同步（doSync emit）的时间，用于拦截内部同步产生的 content 变化，避免误触发导图重建
+let internalSyncAt = 0
 
 const selectedNode = ref(null)
 const floatToolbarStyle = ref({ display: 'none' })
@@ -111,7 +98,6 @@ const refForm = ref({
   excerpt: ''
 })
 const currentRefId = ref(null)
-const addedBadgeUids = ref(new Set())
 
 const parseMdToTree = (mdText) => {
   if (!mdText || !mdText.trim()) {
@@ -124,15 +110,52 @@ const parseMdToTree = (mdText) => {
   const lines = mdText.split('\n')
   const root = { data: { text: '笔记', uid: 'root' }, children: [] }
   const stack = [{ node: root, level: 0 }]
+  let pendingPara = []
+
+  // 提取行尾的 <!-- uid:xxx --> 注释（用于持久化导图节点 uid，保证 OCR 创建的页码关联不丢）
+  const extractUid = (raw) => {
+    const s = String(raw)
+    const m = s.match(/\s*<!--\s*uid:([A-Za-z0-9_\-]+)\s*-->\s*$/)
+    if (!m) return { uid: null, text: s }
+    return { uid: m[1], text: s.slice(0, m.index) }
+  }
+
+  const flushParagraph = () => {
+    if (pendingPara.length === 0) return
+    const { uid, text: rawText } = extractUid(pendingPara.join('\n'))
+    pendingPara = []
+    const text = sanitizeNodeText(rawText)
+    if (!text) return
+    const paraNode = {
+      data: {
+        text,
+        uid: uid || `para_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        _isParagraph: true
+      },
+      children: []
+    }
+    stack[stack.length - 1].node.children.push(paraNode)
+  }
 
   for (const line of lines) {
     const match = line.match(/^(#{1,6})\s+(.+)/)
-    if (!match) continue
+    if (!match) {
+      // 空行作为段落分隔，非空行累积为段落文本
+      if (line.trim()) {
+        pendingPara.push(line.trim())
+      } else {
+        flushParagraph()
+      }
+      continue
+    }
+    // 遇到标题前先 flush 累积的段落
+    flushParagraph()
     const level = match[1].length
-    const text = match[2].trim()
+    const { uid, text: rawText } = extractUid(match[2])
+    const text = sanitizeNodeText(rawText)
 
     const newNode = {
-      data: { text, uid: `h${level}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` },
+      data: { text, uid: uid || `h${level}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` },
       children: []
     }
 
@@ -143,19 +166,52 @@ const parseMdToTree = (mdText) => {
     stack.push({ node: newNode, level })
   }
 
+  // 最后 flush 剩余段落
+  flushParagraph()
+
   return root
+}
+
+// 清理节点文本：解码 HTML 实体 + 去除 HTML 标签，处理多重编码（如 <p>&lt;p&gt;…&lt;/p&gt;</p>）
+const sanitizeNodeText = (text) => {
+  if (!text) return ''
+  let t = String(text)
+  const decode = (s) => s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+  const strip = (s) => s.replace(/<\/?[^>]+(>|$)/g, '')
+  for (let i = 0; i < 5; i++) {
+    const prev = t
+    t = strip(decode(t)).trim()
+    if (t === prev) break
+  }
+  return t
 }
 
 const treeToMarkdown = (node, level = 0) => {
   if (!node) return ''
   let result = ''
+  // 导出时把节点 uid 写成行尾注释，持久化到 markdown，重新加载后可还原
+  const uidSuffix = node.data && node.data.uid && node.data.uid !== 'root'
+    ? ` <!-- uid:${node.data.uid} -->`
+    : ''
   if (level > 0) {
-    const prefix = '#'.repeat(Math.min(level, 6))
-    result += `${prefix} ${node.data.text}\n`
+    if (node.data._isParagraph) {
+      // 段落节点直接输出文本，不加 # 前缀，前后加空行与标题分隔
+      result += `\n${sanitizeNodeText(node.data.text)}${uidSuffix}\n`
+    } else {
+      const prefix = '#'.repeat(Math.min(level, 6))
+      result += `${prefix} ${sanitizeNodeText(node.data.text)}${uidSuffix}\n`
+    }
   }
   if (node.children) {
     for (const child of node.children) {
-      result += treeToMarkdown(child, level + 1)
+      // 段落节点的子节点不增加层级（段落本身不是标题层级）
+      result += treeToMarkdown(child, node.data._isParagraph ? level : level + 1)
     }
   }
   return result
@@ -165,14 +221,23 @@ let syncTimer = null
 const syncToMarkdown = () => {
   if (!mindMap) return
   clearTimeout(syncTimer)
-  syncTimer = setTimeout(() => {
-    try {
-      const data = mindMap.getData()
-      const md = treeToMarkdown(data, 0)
-      isInternalUpdate = true
-      emit('update:content', md)
-    } catch { /* skip */ }
-  }, 500)
+  syncTimer = setTimeout(() => doSync(), 500)
+}
+// 立即同步（拖入节点时使用，避免切换模式时丢失）
+const syncImmediate = () => {
+  if (!mindMap) return
+  clearTimeout(syncTimer)
+  doSync()
+}
+const doSync = () => {
+  try {
+    const data = mindMap.getData()
+    const md = treeToMarkdown(data, 0)
+    console.log('[doSync] hasUid=', /<!--\s*uid:/.test(md), 'mdHead=', JSON.stringify(md.slice(0, 160)))
+    isInternalUpdate = true
+    internalSyncAt = Date.now()
+    emit('update:content', md)
+  } catch { /* skip */ }
 }
 
 const updateFloatToolbar = () => {
@@ -207,10 +272,16 @@ const updateFloatToolbar = () => {
 }
 
 const initMindMap = () => {
+  console.log('[initMindMap] uidComments=', (props.content.match(/<!--\s*uid:/g) || []).length, 'contentHead=', JSON.stringify((props.content || '').slice(0, 160)))
   if (mindMap) {
     mindMap.destroy()
     mindMap = null
   }
+  isFirstDataChange = true
+  // 重建时旧节点对象已销毁，清除残留的选中节点引用和最近创建节点记录
+  selectedNode.value = null
+  floatToolbarStyle.value = { display: 'none' }
+  lastInsertedNode = null
 
   const data = parseMdToTree(props.content)
 
@@ -219,7 +290,7 @@ const initMindMap = () => {
     data,
     layout: 'logicalStructure',
     theme: 'classic4',
-    enableFreeDrag: true,
+    enableFreeDrag: false,
     mousewheelAction: 'zoom',
     readonly: false,
     initRootNodePosition: ['center', 'center'],
@@ -228,6 +299,15 @@ const initMindMap = () => {
   })
 
   mindMap.on('data_change', () => {
+    // 跳过初始化时的首次 data_change，避免覆盖原始 content
+    if (isFirstDataChange) {
+      isFirstDataChange = false
+      nextTick(() => {
+        clearBadges()
+        setTimeout(renderBadges, 100)
+      })
+      return
+    }
     syncToMarkdown()
     nextTick(() => {
       clearBadges()
@@ -262,7 +342,25 @@ const initMindMap = () => {
     nextTick(() => setTimeout(renderBadges, 100))
   })
 
-  nextTick(() => setTimeout(renderBadges, 300))
+  // 拖拽重组由 simple-mind-map 内置 Drag 插件自动处理
+  // - 拖到其他节点上 → MOVE_NODE_TO 成为其子节点
+  // - 拖到兄弟节点间 → INSERT_AFTER/INSERT_BEFORE 重排序
+  mindMap.on('node_dragend', ({ overlapNodeUid }) => {
+    // 无重叠且 enableFreeDrag=false 时，节点不动
+    // 如果需要"拖到空白→移到根节点"，可在此处理
+    if (!overlapNodeUid) {
+      // 预留：可在此将节点移到根下作为独立主题
+    }
+    syncToMarkdown()
+    nextTick(() => setTimeout(renderBadges, 200))
+  })
+
+  nextTick(() => {
+    setTimeout(() => {
+      renderBadges()
+      if (mindMap) mindMap.view.fit()
+    }, 300)
+  })
 }
 
 const addChildNode = () => {
@@ -270,7 +368,10 @@ const addChildNode = () => {
   if (mindMap.renderer.activeNodeList.length === 0 && mindMap.renderer.root) {
     mindMap.renderer.addNodeToActiveList(mindMap.renderer.root)
   }
-  mindMap.execCommand('INSERT_CHILD_NODE')
+  // 指定 uid，渲染后记录为新节点，后续 OCR 创建节点时挂到它下面
+  const nodeUid = `ocr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  mindMap.execCommand('INSERT_CHILD_NODE', true, [], { uid: nodeUid })
+  rememberLastNode(nodeUid)
   syncToMarkdown()
   nextTick(() => setTimeout(renderBadges, 100))
 }
@@ -316,17 +417,6 @@ const clearBadges = () => {
   if (!canvasRef.value) return
   const badges = canvasRef.value.querySelectorAll('.pdf-ref-badge')
   badges.forEach(b => b.remove())
-  addedBadgeUids.value.clear()
-}
-
-const findNodeElByUid = (uid) => {
-  if (!canvasRef.value) return null
-  const all = canvasRef.value.querySelectorAll('*')
-  for (const el of all) {
-    if (el.dataset && el.dataset.uid === uid) return el
-    if (el.getAttribute && el.getAttribute('data-uid') === uid) return el
-  }
-  return null
 }
 
 const findNodeElByText = (text, usedTexts) => {
@@ -362,52 +452,76 @@ const renderBadges = () => {
 
   props.pdfRefs.forEach(ref => {
     let targetEl = null
+    let nodeInst = null
     if (ref.nodeUid && !usedUids.has(ref.nodeUid)) {
-      targetEl = findNodeElByUid(ref.nodeUid)
-      if (targetEl) {
+      // 优先按 uid 精确匹配（OCR 创建节点时，导图节点 uid 与 note_pdf_ref.nodeUid 一致）
+      nodeInst = mindMap.renderer.nodeCache && mindMap.renderer.nodeCache[ref.nodeUid]
+      if (nodeInst && nodeInst.group && nodeInst.group.node) {
         usedUids.add(ref.nodeUid)
-        const badgeKey = `badge_${ref.nodeUid}`
-        if (addedBadgeUids.value.has(badgeKey)) return
-        addedBadgeUids.value.add(badgeKey)
+        targetEl = nodeInst.group.node
       }
     }
     if (!targetEl) {
       targetEl = findNodeElByText(ref.nodeTitle, usedTexts)
     }
-    if (!targetEl) return
+    if (!targetEl) {
+      console.log('[badge] NOT FOUND → uid=', ref.nodeUid, 'title=', ref.nodeTitle)
+      return
+    }
+    // simple-mind-map 重绘节点时会清掉手工追加的角标，这里做 DOM 级去重：
+    // 已存在则跳过，被重绘清掉后下一次渲染会自动补加
+    if (targetEl.querySelector('.pdf-ref-badge')) return
+    console.log('[badge] matched → uid=', ref.nodeUid, 'byUid=', !!nodeInst, 'title=', ref.nodeTitle)
 
-    const badge = document.createElement('span')
-    badge.className = 'pdf-ref-badge'
-    badge.textContent = '📖'
-    badge.title = `P.${ref.pageStart || '?'} - ${ref.nodeTitle || ''}`
-    badge.dataset.refId = ref.id
-    badge.dataset.pageStart = ref.pageStart || 1
-    badge.style.cssText = `
-      position: absolute;
-      top: -6px;
-      right: -6px;
-      background: #fef3c7;
-      border: 1px solid #fbbf24;
-      color: #92400e;
-      font-size: 12px;
-      padding: 0 4px;
-      border-radius: 10px;
-      cursor: pointer;
-      z-index: 20;
-      line-height: 16px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
-      user-select: none;
-    `
-    targetEl.style.position = targetEl.style.position || 'relative'
-    targetEl.appendChild(badge)
+    // simple-mind-map 节点是 SVG 元素，HTML span 直接挂载不会被渲染，
+    // 因此用 SVG <g> + <rect> + <text> 绘制页码角标，随节点一起缩放/移动
+    const NS = 'http://www.w3.org/2000/svg'
+    const badgeW = 46
+    const badgeH = 20
+    const nodeW = nodeInst && nodeInst.width ? nodeInst.width : 120
+    const x = nodeW - badgeW + 4
+    const y = -badgeH - 6
+
+    const badge = document.createElementNS(NS, 'g')
+    badge.setAttribute('class', 'pdf-ref-badge')
+    badge.style.cursor = 'pointer'
+
+    const rect = document.createElementNS(NS, 'rect')
+    rect.setAttribute('x', x)
+    rect.setAttribute('y', y)
+    rect.setAttribute('width', badgeW)
+    rect.setAttribute('height', badgeH)
+    rect.setAttribute('rx', badgeH / 2)
+    rect.setAttribute('fill', '#fef3c7')
+    rect.setAttribute('stroke', '#fbbf24')
+    rect.setAttribute('stroke-width', '1')
+
+    const text = document.createElementNS(NS, 'text')
+    text.setAttribute('x', x + badgeW / 2)
+    text.setAttribute('y', y + badgeH / 2)
+    text.setAttribute('text-anchor', 'middle')
+    text.setAttribute('dominant-baseline', 'central')
+    text.setAttribute('font-size', '11')
+    text.setAttribute('fill', '#92400e')
+    text.textContent = 'P.' + (ref.pageStart || '?')
+
+    const tip = document.createElementNS(NS, 'title')
+    tip.textContent = `P.${ref.pageStart || '?'} - ${ref.nodeTitle || ''}`
+
+    badge.appendChild(rect)
+    badge.appendChild(text)
+    badge.appendChild(tip)
 
     badge.addEventListener('click', (e) => {
       e.stopPropagation()
+      console.log('[badge] click, pageStart =', ref.pageStart)
       emit('jumpPdfPage', {
-        pageStart: Number(badge.dataset.pageStart) || 1,
+        pageStart: Number(ref.pageStart) || 1,
         ref
       })
     })
+
+    targetEl.appendChild(badge)
   })
 }
 
@@ -505,12 +619,21 @@ const centerNodeByUid = (uid) => {
 }
 
 watch(() => props.content, (newVal, oldVal) => {
+  console.log('[watch-content] skipInternal=', isInternalUpdate, 'ageMs=', Date.now() - internalSyncAt, 'changed=', newVal !== oldVal)
   if (isInternalUpdate) {
     isInternalUpdate = false
     return
   }
+  // 导图内部同步（含 render 后 debounce 延迟回调）产生的 content 变化不应触发重建
+  if (Date.now() - internalSyncAt < 2000) return
   if (newVal !== oldVal) {
-    nextTick(() => initMindMap())
+    nextTick(() => {
+      requestAnimationFrame(() => {
+        if (canvasRef.value && canvasRef.value.offsetWidth > 0) {
+          initMindMap()
+        }
+      })
+    })
   }
 })
 
@@ -525,7 +648,24 @@ let scrollHandler = null
 let resizeHandler = null
 
 onMounted(() => {
-  nextTick(() => initMindMap())
+  // 等待浏览器完成布局后再初始化导图，避免容器宽高为 0
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      if (canvasRef.value && canvasRef.value.offsetWidth > 0 && canvasRef.value.offsetHeight > 0) {
+        initMindMap()
+      } else {
+        // 容器尺寸仍为0，通过 ResizeObserver 延迟初始化
+        const ro = new ResizeObserver((entries) => {
+          const entry = entries[0]
+          if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+            ro.disconnect()
+            initMindMap()
+          }
+        })
+        ro.observe(canvasRef.value)
+      }
+    })
+  })
 
   resizeObserver = new ResizeObserver(() => {
     if (mindMap) mindMap.view.fit()
@@ -545,6 +685,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearTimeout(syncTimer)
   if (scrollHandler) window.removeEventListener('scroll', scrollHandler, true)
   if (resizeHandler) window.removeEventListener('resize', resizeHandler)
   clearBadges()
@@ -557,29 +698,65 @@ onBeforeUnmount(() => {
   }
 })
 
-// 拖放创建节点
+// 最近一次创建的新节点（下一次新建挂到它下面）
+let lastInsertedNode = null
+
+// 节点实例是否仍然有效（仍存在于当前渲染缓存中，未销毁）
+const isNodeValid = (node) => {
+  if (!node || !node.getData) return false
+  try {
+    const uid = node.getData('uid')
+    if (!uid) return false
+    return mindMap.renderer.nodeCache && mindMap.renderer.nodeCache[uid] === node
+  } catch { return false }
+}
+
+// 渲染完成后按 uid 记录新节点，作为下一次新建的父节点
+// 注意：节点实例存放在 renderer.nodeCache[uid]，不存在 renderer.nodeList
+const rememberLastNode = (nodeUid, delay = 200) => {
+  setTimeout(() => {
+    if (!mindMap) return
+    const node = mindMap.renderer.nodeCache && mindMap.renderer.nodeCache[nodeUid]
+    if (node) lastInsertedNode = node
+  }, delay)
+}
+
+// 创建节点（OCR 文字），挂载优先级：选中的节点 > 最近创建的节点 > 根节点
 const insertDragNode = (text, dragMeta) => {
   if (!mindMap) return
-  if (mindMap.renderer.activeNodeList.length === 0 && mindMap.renderer.root) {
-    mindMap.renderer.addNodeToActiveList(mindMap.renderer.root)
+  // 按优先级选择目标父节点
+  let targetNode = null
+  if (selectedNode.value && isNodeValid(selectedNode.value)) {
+    targetNode = selectedNode.value
+  } else if (lastInsertedNode && isNodeValid(lastInsertedNode)) {
+    targetNode = lastInsertedNode
+  } else {
+    targetNode = mindMap.renderer.root
   }
-  mindMap.execCommand('INSERT_CHILD_NODE')
-  // 获取新创建的节点并设置文字
-  const activeNodes = mindMap.renderer.activeNodeList
-  if (activeNodes && activeNodes.length > 0) {
-    const newNode = activeNodes[0]
-    newNode.setData({ ...newNode.getData(), text, _dragMeta: dragMeta })
-    mindMap.render()
-  }
-  syncToMarkdown()
+  if (!targetNode) return
+  // 先清空激活列表，避免此前选中的节点仍在激活列表里，
+  // 导致 INSERT_CHILD_NODE 对每个激活节点都插入子节点（创建出两个节点）
+  mindMap.renderer.clearActiveNodeList()
+  mindMap.renderer.addNodeToActiveList(targetNode)
+  // 通过 appointData 直接指定新节点文字（openEdit=false）：
+  // 若用默认 openEdit=true 会进入编辑态，导致激活列表被清空，后续 SET_NODE_TEXT 找不到新节点、文字填不进去
+  // 优先使用外部传入的 uid（与 pdfRef.nodeUid 一致，保证编辑文字后页码关联不丢）
+  const nodeUid = (dragMeta && dragMeta.uid) || `ocr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  const appointData = { text, uid: nodeUid }
+  if (dragMeta) appointData._dragMeta = dragMeta
+  mindMap.execCommand('INSERT_CHILD_NODE', false, [], appointData)
+  rememberLastNode(nodeUid)
+  // 立即同步，防止切换模式时 debounce 未触发导致内容丢失
+  // 不再 moveNodeToCenter，保持用户当前的缩放和视图位置不变
+  syncImmediate()
   nextTick(() => setTimeout(renderBadges, 200))
 }
 
+// 接收 HTML5 拖放
 const onDrop = (e) => {
   const text = e.dataTransfer.getData('text/plain')
   if (!text || !mindMap) return
 
-  // 尝试读取 PDF 元信息（来自 PdfPreview 的拖拽）
   let dragMeta = null
   try {
     const raw = e.dataTransfer.getData('application/json')
@@ -587,63 +764,25 @@ const onDrop = (e) => {
   } catch { /* ignore */ }
 
   insertDragNode(text, dragMeta)
+
+  // 通知父组件保存 pdf 关联（拖拽创建时父组件不经过 handleOcrCreateNode，需要单独入库）
+  if (dragMeta && dragMeta.uid && dragMeta.documentId) {
+    emit('createPdfRef', { uid: dragMeta.uid, text, ...dragMeta })
+  }
 }
 
-defineExpose({ centerNodeByUid, renderBadges, insertDragNode })
+defineExpose({ centerNodeByUid, renderBadges, insertDragNode, addChildNode, deleteNode, expandAllNodes, collapseAllNodes, fitCanvas, zoomIn, zoomOut })
 </script>
 
 <style scoped>
 .mindmap-editor {
   display: flex;
   flex-direction: column;
+  flex: 1;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   background: #f8f9fc;
   position: relative;
-}
-.mindmap-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
-  flex-shrink: 0;
-}
-.toolbar-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #374151;
-}
-.toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.tool-btn {
-  min-width: 28px;
-  height: 28px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6b7280;
-  transition: all 0.15s;
-  padding: 0 6px;
-}
-.tool-btn:hover {
-  background: #f3f4f6;
-  color: #1f2937;
-}
-.toolbar-sep {
-  width: 1px;
-  height: 20px;
-  background: #e5e7eb;
-  margin: 0 4px;
 }
 .mindmap-canvas {
   flex: 1;

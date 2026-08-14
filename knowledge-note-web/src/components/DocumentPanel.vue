@@ -28,38 +28,63 @@
             </div>
           </div>
           <div v-if="expandedId === doc.id" class="sections">
-            <div v-if="editingDocId === doc.id" class="edit-area">
-              <textarea
-                v-model="editText"
-                class="edit-textarea"
-                rows="10"
-                placeholder="请输入章节JSON格式"
-              ></textarea>
-              <div class="edit-actions">
-                <button class="btn-small" @click="saveEdit(doc.id)">保存</button>
-                <button class="btn-small" @click="cancelEdit">取消</button>
+            <div v-if="chapterLoading[doc.id]" class="loading-state small">加载章节中...</div>
+            <template v-else>
+              <template v-for="chapter in chapterTrees[doc.id] || []" :key="chapter.id">
+                <ChapterItem
+                  :chapter="chapter"
+                  :level="1"
+                  :doc-notebook-id="doc.notebookId || notebookId"
+                  :document-id="doc.id"
+                  :editing-titles="editingTitlesDocId === doc.id"
+                  @bind="openBindDialog"
+                  @create-bind="createAndBindNote"
+                  @unbind="handleUnbind"
+                  @generate-mindmap="generateMindmapForChapter"
+                  @open-note="openNote"
+                  @update-chapter="onChapterUpdated"
+                  @jump-page="onJumpPage"
+                  @title-saved="onTitleSaved"
+                />
+              </template>
+            </template>
+            <!-- 内联添加章节行（与已有章节样式一致） -->
+            <div v-if="addingChapterDocId === doc.id" class="section-item" style="padding-left: 12px;">
+              <div class="section-main">
+                <input
+                  v-model="newChapterTitle"
+                  class="add-chapter-title"
+                  placeholder="新章节标题"
+                  @keydown.enter="confirmAddChapter(doc)"
+                />
+                <div class="page-row">
+                  <input
+                    v-model.number="newChapterPageStart"
+                    class="add-chapter-page"
+                    type="number"
+                    min="1"
+                    placeholder="起页"
+                  />
+                  <span class="page-tilde">~</span>
+                  <input
+                    v-model.number="newChapterPageEnd"
+                    class="add-chapter-page"
+                    type="number"
+                    min="1"
+                    placeholder="止页"
+                  />
+                </div>
+              </div>
+              <div class="section-actions">
+                <button class="btn-xsmall primary" @click="confirmAddChapter(doc)">💾保存</button>
+                <button class="btn-xsmall" @click="cancelAddChapter">取消</button>
               </div>
             </div>
-            <div v-else>
-              <div v-if="chapterLoading[doc.id]" class="loading-state small">加载章节中...</div>
-              <template v-else>
-                <template v-for="chapter in chapterTrees[doc.id] || []" :key="chapter.id">
-                  <ChapterItem
-                    :chapter="chapter"
-                    :level="1"
-                    :doc-notebook-id="doc.notebookId || notebookId"
-                    :document-id="doc.id"
-                    @bind="openBindDialog"
-                    @create-bind="createAndBindNote"
-                    @unbind="handleUnbind"
-                    @generate-mindmap="generateMindmapForChapter"
-                    @open-note="openNote"
-                    @update-chapter="onChapterUpdated"
-                    @jump-page="onJumpPage"
-                  />
-                </template>
-              </template>
-              <button class="btn-link" @click="startEdit(doc)">编辑章节</button>
+            <div class="chapter-bottom-actions">
+              <button class="btn-link" @click="toggleEditTitles(doc)">
+                {{ editingTitlesDocId === doc.id ? '完成编辑' : '编辑标题' }}
+              </button>
+              <button v-if="addingChapterDocId !== doc.id" class="btn-link" @click="startAddChapter(doc)">＋ 添加章节</button>
             </div>
           </div>
         </div>
@@ -99,14 +124,14 @@
 import { ref, watch, inject, h } from 'vue'
 import {
   getDocumentsByNotebook,
-  updateParseResult,
   deleteDocument,
   generateMindmap,
   getDocumentText,
   getChapterList,
   bindChapterNote,
   unbindChapterNote,
-  updateChapter
+  updateChapter,
+  createChapter
 } from '../api/documentApi'
 import { saveNote, listByNotebook } from '../api/noteApi'
 
@@ -116,9 +141,10 @@ const ChapterItem = {
     chapter: { type: Object, required: true },
     level: { type: Number, default: 1 },
     docNotebookId: { type: [Number, String], default: null },
-    documentId: { type: [Number, String], required: true }
+    documentId: { type: [Number, String], required: true },
+    editingTitles: { type: Boolean, default: false }
   },
-  emits: ['bind', 'create-bind', 'unbind', 'generate-mindmap', 'open-note', 'update-chapter', 'jump-page'],
+  emits: ['bind', 'create-bind', 'unbind', 'generate-mindmap', 'open-note', 'update-chapter', 'jump-page', 'title-saved'],
   setup(props, { emit }) {
     const toast = inject('showToast', () => {})
     const generating = ref(false)
@@ -126,6 +152,41 @@ const ChapterItem = {
     const saving = ref(false)
     const inputStart = ref(null)
     const inputEnd = ref(null)
+    // 标题编辑
+    const editingTitle = ref(false)
+    const editTitleText = ref('')
+    const savingTitle = ref(false)
+
+    const startEditTitle = () => {
+      editTitleText.value = props.chapter.title || ''
+      editingTitle.value = true
+    }
+    const cancelEditTitle = () => {
+      editingTitle.value = false
+      editTitleText.value = ''
+    }
+    const saveEditTitle = async () => {
+      const newTitle = editTitleText.value.trim()
+      if (!newTitle) {
+        toast('标题不能为空', 'error'); return
+      }
+      if (newTitle === props.chapter.title) {
+        editingTitle.value = false; return
+      }
+      savingTitle.value = true
+      try {
+        await updateChapter(props.chapter.id, { title: newTitle })
+        // 直接更新本地数据
+        props.chapter.title = newTitle
+        toast('标题已保存', 'success')
+        emit('title-saved', { chapterId: props.chapter.id, title: newTitle })
+        editingTitle.value = false
+      } catch (e) {
+        // handled
+      } finally {
+        savingTitle.value = false
+      }
+    }
 
     const startEditPage = () => {
       inputStart.value = props.chapter.pageStart || ''
@@ -257,13 +318,45 @@ const ChapterItem = {
       ])
     }
 
+    const renderTitle = () => {
+      if (props.editingTitles && editingTitle.value) {
+        return h('div', { class: 'title-edit-row' }, [
+          h('input', {
+            class: 'title-edit-input',
+            value: editTitleText.value,
+            onInput: (e) => { editTitleText.value = e.target.value },
+            onKeydown: (e) => {
+              if (e.key === 'Enter') saveEditTitle()
+              if (e.key === 'Escape') cancelEditTitle()
+            },
+            placeholder: '章节标题'
+          }),
+          h('button', {
+            class: 'btn-xsmall primary',
+            disabled: savingTitle.value,
+            onClick: saveEditTitle
+          }, savingTitle.value ? '...' : '💾'),
+          h('button', {
+            class: 'btn-xsmall',
+            disabled: savingTitle.value,
+            onClick: cancelEditTitle
+          }, '取消')
+        ])
+      }
+      return h('span', {
+        class: 'section-title',
+        style: props.editingTitles ? { cursor: 'pointer', borderBottom: '1px dashed #bfdbfe', padding: '2px 4px', borderRadius: '3px' } : {},
+        onClick: props.editingTitles ? startEditTitle : undefined
+      }, props.chapter.title)
+    }
+
     return () => h('div', { class: 'chapter-wrapper' }, [
       h('div', {
         class: 'section-item',
         style: { paddingLeft: ((props.level || 1) - 1) * 16 + 12 + 'px' }
       }, [
         h('div', { class: 'section-main' }, [
-          h('span', { class: 'section-title' }, props.chapter.title),
+          renderTitle(),
           renderPageArea(),
           hasBind()
             ? h('span', { class: 'section-bound', onClick: handleOpenNote }, [
@@ -302,13 +395,15 @@ const ChapterItem = {
           level: props.level + 1,
           docNotebookId: props.docNotebookId,
           documentId: props.documentId,
+          editingTitles: props.editingTitles,
           onBind: (d) => emit('bind', d),
           onCreateBind: (d) => emit('create-bind', d),
           onUnbind: (c) => emit('unbind', c),
           onGenerateMindmap: (d) => emit('generate-mindmap', d),
           onOpenNote: (id) => emit('open-note', id),
           onUpdateChapter: (d) => emit('update-chapter', d),
-          onJumpPage: (d) => emit('jump-page', d)
+          onJumpPage: (d) => emit('jump-page', d),
+          onTitleSaved: (d) => emit('title-saved', d)
         })
       )
     ])
@@ -324,8 +419,7 @@ const toast = inject('showToast', () => {})
 const loading = ref(false)
 const documents = ref([])
 const expandedId = ref(null)
-const editingDocId = ref(null)
-const editText = ref('')
+const editingTitlesDocId = ref(null)
 
 const chapterTrees = ref({})
 const chapterLoading = ref({})
@@ -335,6 +429,49 @@ const bindDialogChapter = ref(null)
 const bindDialogNotebookId = ref(null)
 const selectedBindNoteId = ref('')
 const availableNotes = ref([])
+
+// 添加章节（内联）
+const addingChapterDocId = ref(null)
+const newChapterTitle = ref('')
+const newChapterPageStart = ref(null)
+const newChapterPageEnd = ref(null)
+
+const startAddChapter = (doc) => {
+  addingChapterDocId.value = doc.id
+  newChapterTitle.value = ''
+  newChapterPageStart.value = null
+  newChapterPageEnd.value = null
+}
+
+const cancelAddChapter = () => {
+  addingChapterDocId.value = null
+  newChapterTitle.value = ''
+  newChapterPageStart.value = null
+  newChapterPageEnd.value = null
+}
+
+const confirmAddChapter = async (doc) => {
+  const title = newChapterTitle.value.trim()
+  if (!title) return
+  const payload = {
+    documentId: doc.id,
+    parentId: 0,
+    title,
+    level: 1
+  }
+  const ps = parseInt(newChapterPageStart.value, 10)
+  const pe = parseInt(newChapterPageEnd.value, 10)
+  if (!isNaN(ps) && ps >= 1) payload.pageStart = ps
+  if (!isNaN(pe) && pe >= 1) payload.pageEnd = pe
+  try {
+    await createChapter(payload)
+    toast('章节添加成功', 'success')
+    cancelAddChapter()
+    // 刷新章节树
+    chapterTrees.value[doc.id] = null
+    loadChapters(doc)
+  } catch (e) { /* handled */ }
+}
 
 const loadDocuments = async () => {
   if (!props.notebookId) return
@@ -393,39 +530,19 @@ const toggleSections = (doc) => {
     expandedId.value = doc.id
     loadChapters(doc)
   }
-  editingDocId.value = null
+  editingTitlesDocId.value = null
 }
 
-const startEdit = (doc) => {
-  editingDocId.value = doc.id
-  editText.value = typeof doc.parseResult === 'string'
-    ? doc.parseResult
-    : JSON.stringify(doc.parseResult, null, 2)
-}
-
-const cancelEdit = () => {
-  editingDocId.value = null
-  editText.value = ''
-}
-
-const saveEdit = async (id) => {
-  try {
-    const parsed = JSON.parse(editText.value)
-    await updateParseResult(id, parsed)
-    toast('章节更新成功', 'success')
-    editingDocId.value = null
-    editText.value = ''
-    chapterTrees.value[id] = null
-    await loadDocuments()
-    const doc = documents.value.find(d => d.id === id)
-    if (doc && expandedId.value === id) {
-      loadChapters(doc)
-    }
-  } catch (e) {
-    if (e instanceof SyntaxError) {
-      toast('JSON 格式错误，请检查', 'error')
-    }
+const toggleEditTitles = (doc) => {
+  if (editingTitlesDocId.value === doc.id) {
+    editingTitlesDocId.value = null
+  } else {
+    editingTitlesDocId.value = doc.id
   }
+}
+
+const onTitleSaved = () => {
+  // 标题更新后无需特殊处理，ChapterItem 已直接更新本地数据
 }
 
 const onDelete = async (id) => {
@@ -780,6 +897,27 @@ defineExpose({ loadDocuments })
   font-weight: 500;
   word-break: break-all;
 }
+.title-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.title-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid #3b82f6;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #1f2937;
+  outline: none;
+  font-weight: 500;
+  background: #fff;
+}
+.title-edit-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+}
 .page-row {
   display: flex;
   align-items: center;
@@ -835,29 +973,6 @@ defineExpose({ loadDocuments })
   flex-shrink: 0;
   justify-content: flex-end;
 }
-.edit-area {
-  padding: 10px 14px;
-}
-.edit-textarea {
-  width: 100%;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 13px;
-  font-family: "Consolas", "Monaco", monospace;
-  resize: vertical;
-  outline: none;
-  color: #374151;
-  box-sizing: border-box;
-}
-.edit-textarea:focus {
-  border-color: #3b82f6;
-}
-.edit-actions {
-  margin-top: 8px;
-  display: flex;
-  gap: 6px;
-}
 .btn-link {
   background: none;
   border: none;
@@ -868,6 +983,44 @@ defineExpose({ loadDocuments })
 }
 .btn-link:hover {
   text-decoration: underline;
+}
+.chapter-bottom-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-top: 1px solid #f3f4f6;
+  padding: 2px 0;
+}
+.add-chapter-title {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid #3b82f6;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #1f2937;
+  outline: none;
+  font-weight: 500;
+  background: #fff;
+}
+.add-chapter-title:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+}
+.add-chapter-page {
+  width: 72px;
+  padding: 3px 6px;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #374151;
+  outline: none;
+  background: #fff;
+  text-align: center;
+}
+.add-chapter-page:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
 }
 
 /* Dialog */
